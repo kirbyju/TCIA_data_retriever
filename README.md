@@ -5,13 +5,13 @@
 ---
 
 ## Features
-- ✅ **Thread-safe parallel downloads** - Proper concurrency with mutex protection
-- ✅ **Server-friendly operation** - Configurable delays and connection limits to avoid server issues
-- ✅ **Automatic retry with exponential backoff** - Handles transient failures gracefully
-- ✅ **File verification** - Size and MD5 checksum validation
-- ✅ **Comprehensive test suite** - Smoke, parallel, integration, and performance tests
-- ✅ **Connection pooling** - HTTP/2 support with efficient connection reuse
-- ✅ **Progress tracking** - Real-time download progress with size and speed indicators
+- **Thread-safe parallel downloads** - Proper concurrency with mutex protection
+- **Server-friendly operation** - Configurable delays and connection limits to avoid server issues
+- **Automatic retry with exponential backoff** - Handles transient failures gracefully
+- **File verification** - Size and MD5 checksum validation
+- **Comprehensive test suite** - Smoke, parallel, integration, and performance tests
+- **Connection pooling** - HTTP/2 support with efficient connection reuse
+- **Progress tracking** - Real-time download progress with size and speed indicators
 
 ## Installation
 
@@ -100,6 +100,78 @@ OPTIONS:
 ./nbia-downloader -i manifest.tcia --force
 ```
 
+## Advanced Usage Examples
+
+```bash
+# Download to specific directory with debug logging
+./nbia-downloader -i manifest.tcia -s /data/medical/images --debug --save-log
+
+# Use proxy with authentication
+./nbia-downloader -i manifest.tcia --proxy socks5://user:pass@proxy.example.com:1080
+
+# Download with custom connection settings
+./nbia-downloader -i manifest.tcia -p 10 --max-connections 20 --max-retries 5
+
+# Download only metadata (no images)
+./nbia-downloader -i manifest.tcia --meta -s metadata.json
+
+# Prompt for password (secure input)
+./nbia-downloader -i manifest.tcia -u myusername --prompt
+
+# Combine multiple options for large datasets
+./nbia-downloader -i large_dataset.tcia \
+  -u myusername \
+  --passwd mypassword \
+  -s /large/storage/path \
+  -p 8 \
+  --max-connections 16 \
+  --skip-existing \
+  --debug \
+  --save-log
+
+# Download with custom API endpoints (for private NBIA instances)
+./nbia-downloader -i manifest.tcia \
+  --token-url https://private.nbia.com/oauth/token \
+  --image-url https://private.nbia.com/api/v2/getImage \
+  --meta-url https://private.nbia.com/api/v2/getSeriesMetaData
+```
+
+## Performance Tuning
+
+```bash
+# For fast networks and servers (maximize throughput)
+./nbia-downloader -i manifest.tcia -p 20 --max-connections 40
+
+# For slow/unstable networks (maximize reliability)
+./nbia-downloader -i manifest.tcia -p 2 --max-connections 4 --max-retries 5
+
+# For rate-limited servers (avoid 429 errors)
+./nbia-downloader -i manifest.tcia -p 1 --server-friendly
+
+# Balance performance and stability
+./nbia-downloader -i manifest.tcia -p 5 --max-connections 10 --max-retries 3
+```
+
+## Troubleshooting Examples
+
+```bash
+# Debug connection issues
+./nbia-downloader -i manifest.tcia --debug --save-log -p 1
+
+# Test with single file download
+head -20 manifest.tcia > test_single.tcia
+./nbia-downloader -i test_single.tcia --debug
+
+# Verify checksums after download
+./nbia-downloader -i manifest.tcia --skip-existing --debug
+# (will verify existing files and skip if valid)
+
+# Use with system proxy settings
+export HTTP_PROXY=http://proxy.company.com:8080
+export HTTPS_PROXY=http://proxy.company.com:8080
+./nbia-downloader -i manifest.tcia
+```
+
 ## Server-Friendly Mode
 
 If you experience truncated downloads or server errors, use the `--server-friendly` flag:
@@ -135,16 +207,6 @@ cd tests
 - TCIA servers do not support HTTP Range requests (resumable downloads)
 - Some servers may truncate large files - use `--server-friendly` mode
 - Server rate limiting may cause failures - adjust `--processes` and `--max-connections`
-
-## Improvements Over Original
-
-- ✅ Thread-safe implementation
-- ✅ Proper error handling and retries
-- ✅ File verification
-- ✅ Server-friendly defaults
-- ✅ Comprehensive test coverage
-- ✅ Better performance with parallel metadata fetching
-- ✅ No Java/Swing dependencies
 
 ## Requirements
 
