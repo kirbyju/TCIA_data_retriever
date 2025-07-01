@@ -5,6 +5,7 @@ import (
 	"github.com/DavidGamba/go-getoptions"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 var (
@@ -30,12 +31,24 @@ type Options struct {
 	ImageUrl   string
 	SaveLog    bool
 	Prompt     bool
+	Force      bool
+	SkipExisting bool
+	MaxRetries int
+	RetryDelay time.Duration
+	MaxConnsPerHost int
+	ServerFriendly bool
+	RequestDelay time.Duration
 
 	opt *getoptions.GetOpt
 }
 
 func InitOptions() *Options {
-	opt := &Options{opt: getoptions.New()}
+	opt := &Options{
+		opt: getoptions.New(),
+		RetryDelay: 10 * time.Second, // Server-friendly: 10 second initial retry delay
+		MaxConnsPerHost: 8, // Balanced setting
+		RequestDelay: 500 * time.Millisecond, // Server-friendly: delay between requests
+	}
 
 	setLogger(false, "")
 
@@ -53,7 +66,7 @@ func InitOptions() *Options {
 		opt.opt.Description("Output directory, or output file when --meta enabled"))
 	opt.opt.StringVar(&opt.Proxy, "proxy", "", opt.opt.Alias("x"),
 		opt.opt.Description("the proxy to use [http, socks5://user:passwd@host:port]"))
-	opt.opt.IntVar(&opt.Concurrent, "processes", 1, opt.opt.Alias("p"),
+	opt.opt.IntVar(&opt.Concurrent, "processes", 2, opt.opt.Alias("p"),
 		opt.opt.Description("start how many download at same time"))
 	opt.opt.BoolVar(&opt.Meta, "meta", false, opt.opt.Alias("m"),
 		opt.opt.Description("get Meta info of all files"))
@@ -69,10 +82,29 @@ func InitOptions() *Options {
 		opt.opt.Description("the api url get meta data"))
 	opt.opt.StringVar(&opt.ImageUrl, "image-url", ImageUrl,
 		opt.opt.Description("the api url to download image data"))
+	opt.opt.BoolVar(&opt.Force, "force", false, opt.opt.Alias("f"),
+		opt.opt.Description("force re-download even if files exist"))
+	opt.opt.BoolVar(&opt.SkipExisting, "skip-existing", false,
+		opt.opt.Description("skip download if image file already exists"))
+	opt.opt.IntVar(&opt.MaxRetries, "max-retries", 3,
+		opt.opt.Description("maximum number of download retries"))
+	opt.opt.IntVar(&opt.MaxConnsPerHost, "max-connections", 8,
+		opt.opt.Description("maximum concurrent connections per host"))
+	opt.opt.BoolVar(&opt.ServerFriendly, "server-friendly", false,
+		opt.opt.Description("use extra conservative settings to avoid server issues"))
 
 	_, err := opt.opt.Parse(os.Args[1:])
 	if err != nil {
 		logger.Fatal(err)
+	}
+
+	// Apply server-friendly settings if enabled
+	if opt.ServerFriendly {
+		opt.Concurrent = 1
+		opt.MaxConnsPerHost = 2
+		opt.RetryDelay = 30 * time.Second
+		opt.RequestDelay = 2 * time.Second
+		logger.Info("Server-friendly mode: Using extra conservative settings")
 	}
 
 	if opt.Debug || opt.SaveLog {

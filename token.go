@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,57 @@ type Token struct {
 	RefreshToken     string    `json:"refresh_token"`
 	TokenType        string    `json:"token_type"`
 	ExpiredTime      time.Time `json:"expires_time"`
+	
+	// Thread safety
+	mu       sync.RWMutex
+	username string
+	password string
+	path     string
+}
+
+// GetAccessToken returns the access token, refreshing if necessary
+func (token *Token) GetAccessToken() (string, error) {
+	token.mu.RLock()
+	if time.Now().Before(token.ExpiredTime) {
+		accessToken := token.AccessToken
+		token.mu.RUnlock()
+		return accessToken, nil
+	}
+	token.mu.RUnlock()
+	
+	// Token expired, refresh it
+	token.mu.Lock()
+	defer token.mu.Unlock()
+	
+	// Double-check after acquiring write lock
+	if time.Now().Before(token.ExpiredTime) {
+		return token.AccessToken, nil
+	}
+	
+	logger.Infof("Token expired, refreshing...")
+	newToken, err := createNewToken(token.username, token.password, token.path)
+	if err != nil {
+		return "", fmt.Errorf("failed to refresh token: %v", err)
+	}
+	
+	// Copy new token data
+	token.AccessToken = newToken.AccessToken
+	token.SessionState = newToken.SessionState
+	token.ExpiresIn = newToken.ExpiresIn
+	token.NotBeforePolicy = newToken.NotBeforePolicy
+	token.RefreshExpiresIn = newToken.RefreshExpiresIn
+	token.Scope = newToken.Scope
+	token.IdToken = newToken.IdToken
+	token.RefreshToken = newToken.RefreshToken
+	token.TokenType = newToken.TokenType
+	token.ExpiredTime = newToken.ExpiredTime
+	
+	// Save updated token
+	if err := token.dumpInternal(); err != nil {
+		logger.Warnf("Failed to save refreshed token: %v", err)
+	}
+	
+	return token.AccessToken, nil
 }
 
 func makeURL(url_ string, values map[string]interface{}) (string, error) {
@@ -47,21 +99,46 @@ func makeURL(url_ string, values map[string]interface{}) (string, error) {
 // NewToken create token from official NBIA API
 func NewToken(username, passwd, path string) (*Token, error) {
 	logger.Debugf("creating token")
-	token := new(Token)
+	token := &Token{
+		username: username,
+		password: passwd,
+		path:     path,
+	}
+	
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		logger.Infof("restore token from %v", path)
 		err = token.Load(path)
 		if err != nil {
 			logger.Error(err)
 			logger.Infof("create new token")
-		}
-		if token.ExpiredTime.Compare(time.Now()) <= 0 {
-			logger.Warn("token expired, create new token")
-		} else {
+		} else if token.ExpiredTime.Compare(time.Now()) > 0 {
+			// Token is still valid
+			token.username = username
+			token.password = passwd
+			token.path = path
 			return token, nil
+		} else {
+			logger.Warn("token expired, create new token")
 		}
 	}
 
+	// Create new token
+	newToken, err := createNewToken(username, passwd, path)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Copy token data and set credentials
+	*token = *newToken
+	token.username = username
+	token.password = passwd
+	token.path = path
+	
+	return token, nil
+}
+
+// createNewToken creates a new token from the API
+func createNewToken(username, passwd, path string) (*Token, error) {
 	// format the token request url
 	url_, err := makeURL(
 		TokenUrl,
@@ -72,51 +149,121 @@ func NewToken(username, passwd, path string) (*Token, error) {
 			"grant_type": "password",
 		})
 	if err != nil {
-		return nil, fmt.Errorf("error creating token: %v", err)
+		return nil, fmt.Errorf("error creating token URL: %v", err)
 	}
 
 	req, err := http.NewRequest("POST", url_, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %v", err)
+	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Errorf("failed to do request: %v", err)
+		return nil, fmt.Errorf("failed to do request: %v", err)
 	}
+	defer resp.Body.Close()
 
 	content, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
 	if err != nil {
-		logger.Errorf("failed to read response data: %v", err)
+		return nil, fmt.Errorf("failed to read response data: %v", err)
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token from response body: %v", err)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(content))
 	}
 
+	token := new(Token)
 	err = json.Unmarshal(content, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal token: %v", err)
+	}
 
 	token.ExpiredTime = time.Now().Local().Add(time.Second * time.Duration(token.ExpiresIn))
-	return token, token.Dump(path)
+	
+	// Save token
+	if path != "" {
+		if err := token.Dump(path); err != nil {
+			logger.Warnf("Failed to save token: %v", err)
+		}
+	}
+	
+	return token, nil
 }
 
-// Dump is used to save token information
+// Dump is used to save token information (thread-safe)
 func (token *Token) Dump(path string) error {
-	logger.Debugf("saving token to %s", path)
-	f, err := os.OpenFile(path, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	token.mu.RLock()
+	defer token.mu.RUnlock()
+	return token.dumpInternal()
+}
+
+// dumpInternal saves token without locking (caller must hold lock)
+func (token *Token) dumpInternal() error {
+	if token.path == "" {
+		return nil
+	}
+	
+	logger.Debugf("saving token to %s", token.path)
+	
+	// Create temp file first
+	tempPath := token.path + ".tmp"
+	f, err := os.OpenFile(tempPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open token json: %v", err)
 	}
+	
+	// Create a copy without internal fields
+	tokenCopy := struct {
+		AccessToken      string    `json:"access_token"`
+		SessionState     string    `json:"session_state"`
+		ExpiresIn        int       `json:"expires_in"`
+		NotBeforePolicy  int       `json:"not-before-policy"`
+		RefreshExpiresIn int       `json:"refresh_expires_in"`
+		Scope            string    `json:"scope"`
+		IdToken          string    `json:"id_token"`
+		RefreshToken     string    `json:"refresh_token"`
+		TokenType        string    `json:"token_type"`
+		ExpiredTime      time.Time `json:"expires_time"`
+	}{
+		AccessToken:      token.AccessToken,
+		SessionState:     token.SessionState,
+		ExpiresIn:        token.ExpiresIn,
+		NotBeforePolicy:  token.NotBeforePolicy,
+		RefreshExpiresIn: token.RefreshExpiresIn,
+		Scope:            token.Scope,
+		IdToken:          token.IdToken,
+		RefreshToken:     token.RefreshToken,
+		TokenType:        token.TokenType,
+		ExpiredTime:      token.ExpiredTime,
+	}
 
-	content, err := json.MarshalIndent(token, "", "    ")
+	content, err := json.MarshalIndent(tokenCopy, "", "    ")
 	if err != nil {
+		f.Close()
+		os.Remove(tempPath)
 		return fmt.Errorf("failed to marshal token: %v", err)
 	}
+	
 	_, err = f.Write(content)
 	if err != nil {
+		f.Close()
+		os.Remove(tempPath)
 		return fmt.Errorf("failed to dump token: %v", err)
 	}
 
-	return f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to close token file: %v", err)
+	}
+	
+	// Atomic rename
+	if err := os.Rename(tempPath, token.path); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename token file: %v", err)
+	}
+	
+	return nil
 }
 
 // Load restore token from json
