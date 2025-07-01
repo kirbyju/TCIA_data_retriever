@@ -53,7 +53,7 @@ fi
 
 # Build the tool first
 print_header "Building NBIA Downloader"
-if (cd "$SCRIPT_DIR/.." && go build -o nbia-downloader-fixed .); then
+if (cd "$SCRIPT_DIR/.." && go build -o nbia-data-retriever-cli .); then
     print_success "Build successful"
 else
     print_error "Build failed"
@@ -107,6 +107,7 @@ run_test "smoke_test" "$SCRIPT_DIR/test_smoke.sh" 120
 run_test "parallel_test" "$SCRIPT_DIR/test_parallel.sh" 180
 run_test "integration_test" "$SCRIPT_DIR/integration/test_integration.sh" 300
 run_test "advanced_features_test" "$SCRIPT_DIR/test_advanced_features.sh" 180
+run_test "md5_nodecompress_test" "$SCRIPT_DIR/test_md5_nodecompress.sh" 180
 run_test "performance_test" "$SCRIPT_DIR/test_performance.sh" 300
 
 # Final report
@@ -142,6 +143,9 @@ echo "✓ Invalid credentials handling"
 echo "✓ Token refresh mechanism"
 echo "✓ File size verification"
 echo "✓ MD5 checksum verification"
+echo "✓ MD5 validation mode (--md5)"
+echo "✓ No-decompress mode (--no-decompress)"
+echo "✓ Automatic ZIP extraction (default)"
 echo "✓ Proxy support"
 echo "✓ Custom API URL"
 echo "✓ Rate limiting handling"

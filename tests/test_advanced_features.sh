@@ -13,11 +13,14 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NBIA_TOOL="${SCRIPT_DIR}/../nbia-downloader-fixed"
+NBIA_TOOL="${SCRIPT_DIR}/../nbia-data-retriever-cli"
 TEST_OUTPUT="${SCRIPT_DIR}/test_output"
 MANIFEST="${SCRIPT_DIR}/fixtures/small_manifest.tcia"
 USERNAME="${NBIA_USER:-nbia_guest}"
 PASSWORD="${NBIA_PASS:-}"
+
+# Source helper functions
+source "${SCRIPT_DIR}/test_helpers.sh"
 
 # Functions
 print_success() {
@@ -79,51 +82,65 @@ if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
     -s "$test2_dir" \
     -p 1 \
-    --api "https://invalid.api.example.com" \
+    --token-url "https://invalid.api.example.com/token" \
+    --meta-url "https://invalid.api.example.com/meta" \
+    --image-url "https://invalid.api.example.com/image" \
     --max-retries 1 \
-    --debug 2>&1 | grep -q "api\|connection\|failed"; then
-    print_success "Custom API URL option works"
+    --debug 2>&1 | grep -q "url\|connection\|failed"; then
+    print_success "Custom API URL options work"
 else
     print_error "Custom API URL not processed"
 fi
 
 echo
 
-# Test 3: Checksum verification
-print_info "Test 3: Testing checksum verification..."
+# Test 3: Checksum verification with MD5 mode
+print_info "Test 3: Testing checksum verification with MD5 mode..."
 test3_dir="$TEST_OUTPUT/test3"
 mkdir -p "$test3_dir"
 
-# First download files
-"$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+# First download files with MD5 validation enabled
+if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
     -s "$test3_dir" \
     -p 1 \
-    --debug > "$test3_dir/download.log" 2>&1 || true
-
-# Check if MD5 verification is mentioned in logs
-if grep -q "MD5\|checksum\|hash" "$test3_dir/download.log"; then
-    print_success "Checksum verification active"
-else
-    print_info "Checksum verification not explicitly shown"
+    --md5 \
+    --debug > "$test3_dir/download.log" 2>&1; then
+    print_error "MD5 validation download failed"
+    cat "$test3_dir/download.log" | tail -20
+    exit 1
 fi
 
-# Corrupt a file and try to re-download
-if [ -f "$test3_dir"/*.zip ]; then
-    first_zip=$(ls "$test3_dir"/*.zip | head -1)
-    echo "corrupted" > "$first_zip"
-    
-    # Try to download again - should detect corruption
-    if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
-        -i "$MANIFEST" \
-        -s "$test3_dir" \
-        -p 1 \
-        --skip-existing \
-        --debug 2>&1 | grep -q "checksum\|MD5\|corrupt\|mismatch"; then
-        print_success "Corrupted file detection works"
-    else
-        print_info "Corruption detection not tested"
-    fi
+# Check if MD5 verification actually happened
+if validate_md5_verification "$test3_dir/download.log"; then
+    print_success "MD5 checksum verification confirmed"
+else
+    print_info "MD5 checksum verification not confirmed in logs"
+fi
+
+# Validate extracted content has proper structure
+if validate_extraction_structure "$test3_dir"; then
+    print_success "MD5 validated files extracted properly"
+else
+    print_error "Extraction validation failed after MD5 download"
+fi
+
+# Test with no-decompress to keep ZIP files
+test3b_dir="$TEST_OUTPUT/test3b"
+mkdir -p "$test3b_dir"
+"$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+    -i "$MANIFEST" \
+    -s "$test3b_dir" \
+    -p 1 \
+    --no-decompress \
+    --debug > "$test3b_dir/download.log" 2>&1
+
+# Check if ZIP files were kept
+zip_count=$(find "$test3b_dir" -name "*.zip" -type f | wc -l)
+if [ "$zip_count" -gt 0 ]; then
+    print_success "No-decompress mode keeps ZIP files ($zip_count found)"
+else
+    print_error "No-decompress mode failed"
 fi
 
 echo
@@ -167,8 +184,10 @@ PID=$!
 
 # Wait a bit then send SIGTERM
 sleep 2
-kill -TERM $PID 2>/dev/null || true
-wait $PID 2>/dev/null || true
+if ! kill -TERM $PID 2>/dev/null; then
+    print_info "Process already terminated"
+fi
+wait $PID 2>/dev/null || true  # Wait can fail if process already exited
 
 # Check if it shut down gracefully
 if grep -q "signal\|interrupt\|shutdown\|cleanup" "$test5_dir/output.log"; then
@@ -192,12 +211,17 @@ for i in {1..100}; do
 done
 
 # Monitor memory usage
-/usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+# Note: time command can fail if tool fails, so we capture exit code
+if /usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$large_manifest" \
     -s "$test6_dir" \
     -p 5 \
     --meta \
-    --debug 2>&1 | tee "$test6_dir/memory.log" || true
+    --debug 2>&1 | tee "$test6_dir/memory.log"; then
+    print_info "Memory test completed successfully"
+else
+    print_info "Memory test had non-zero exit but we captured metrics"
+fi
 
 if grep -q "Maximum resident set size" "$test6_dir/memory.log"; then
     mem_kb=$(grep "Maximum resident set size" "$test6_dir/memory.log" | awk '{print $6}')

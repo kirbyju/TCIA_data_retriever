@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NBIA_TOOL="${SCRIPT_DIR}/../nbia-downloader-fixed"
+NBIA_TOOL="${SCRIPT_DIR}/../nbia-data-retriever-cli"
 TEST_OUTPUT="${SCRIPT_DIR}/test_output"
 MANIFEST="${SCRIPT_DIR}/fixtures/NSCLC-RADIOMICS-INTEROBSERVER1-Aug-31-2020-NBIA-manifest.tcia"
 USERNAME="${NBIA_USER:-nbia_guest}"
@@ -72,8 +72,8 @@ test_worker_count() {
     local end_time=$(date +%s.%N)
     local duration=$(echo "$end_time - $start_time" | bc)
     
-    # Count downloaded files
-    local file_count=$(find "$test_dir" -name "*.zip" -type f | wc -l)
+    # Count downloaded directories (files are extracted by default)
+    local file_count=$(find "$test_dir" -mindepth 3 -maxdepth 3 -type d | wc -l)
     local total_size=$(du -sh "$test_dir" | cut -f1)
     
     # Extract summary from log
@@ -98,12 +98,12 @@ test_worker_count() {
 verify_consistency() {
     print_info "Verifying download consistency across different worker counts..."
     
-    # Get file lists from each test
-    local base_files=$(find "$TEST_OUTPUT/workers_1" -name "*.zip" -type f | sed 's|.*/||' | sort)
+    # Get directory lists from each test (files are extracted)
+    local base_files=$(find "$TEST_OUTPUT/workers_1" -mindepth 3 -maxdepth 3 -type d | sed 's|.*/||' | sort)
     local consistent=true
     
     for workers in 2 5 10; do
-        local test_files=$(find "$TEST_OUTPUT/workers_$workers" -name "*.zip" -type f 2>/dev/null | sed 's|.*/||' | sort)
+        local test_files=$(find "$TEST_OUTPUT/workers_$workers" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | sed 's|.*/||' | sort)
         
         if [ "$base_files" != "$test_files" ]; then
             print_error "File list mismatch between 1 worker and $workers workers"
@@ -164,7 +164,14 @@ print_success "Optimal worker count: $optimal workers"
 # Check for race conditions
 echo
 print_info "Checking for race conditions..."
-error_count=$(grep -c "panic\|race\|concurrent map" "$TEST_OUTPUT"/*/output.log 2>/dev/null || echo 0)
+# Use grep -c but handle the case where no matches are found (returns 1)
+error_count=0
+for log_file in "$TEST_OUTPUT"/*/output.log; do
+    if [ -f "$log_file" ]; then
+        count=$(grep -c "panic\|race\|concurrent map" "$log_file" 2>/dev/null || echo 0)
+        error_count=$((error_count + count))
+    fi
+done
 if [ "$error_count" -eq 0 ]; then
     print_success "No race conditions detected"
 else

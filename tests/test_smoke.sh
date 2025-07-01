@@ -12,11 +12,14 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NBIA_TOOL="${SCRIPT_DIR}/../nbia-downloader-fixed"
+NBIA_TOOL="${SCRIPT_DIR}/../nbia-data-retriever-cli"
 TEST_OUTPUT="${SCRIPT_DIR}/test_output"
 MANIFEST="${SCRIPT_DIR}/fixtures/small_manifest.tcia"
 USERNAME="${NBIA_USER:-nbia_guest}"
 PASSWORD="${NBIA_PASS:-}"
+
+# Source helper functions
+source "${SCRIPT_DIR}/test_helpers.sh"
 
 # Functions
 print_success() {
@@ -61,8 +64,8 @@ else
     fi
 fi
 
-# Test 3: Basic download with 1 worker
-print_info "Test 3: Testing basic download (1 worker)..."
+# Test 3: Basic download with 1 worker (extracts by default)
+print_info "Test 3: Testing basic download (1 worker, extraction mode)..."
 mkdir -p "$TEST_OUTPUT/test3"
 if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
@@ -73,43 +76,70 @@ if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     exit 1
 fi
 
-# Check if files were downloaded
-file_count=$(find "$TEST_OUTPUT/test3" -name "*.zip" -type f | wc -l)
-if [ "$file_count" -eq 0 ]; then
-    print_error "No files downloaded"
+# Check if directories were created (files are extracted by default)
+dir_count=$(find "$TEST_OUTPUT/test3" -mindepth 3 -maxdepth 3 -type d | wc -l)
+if [ "$dir_count" -eq 0 ]; then
+    print_error "No directories created (extraction failed)"
     exit 1
 fi
-print_success "Downloaded $file_count files with 1 worker"
+
+# Validate extracted content
+if validate_extraction_structure "$TEST_OUTPUT/test3"; then
+    print_success "Downloaded and extracted $dir_count series with valid structure"
+else
+    print_error "Extraction structure validation failed"
+    exit 1
+fi
 
 # Test 4: Verify skip-existing functionality
 print_info "Test 4: Testing skip-existing functionality..."
-original_count=$file_count
+original_count=$dir_count
+
+# Record file count before
+before_files=$(find "$TEST_OUTPUT/test3" -type f | wc -l)
+
+# Run with skip-existing
 if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
     -s "$TEST_OUTPUT/test3" \
     -p 1 \
     --skip-existing \
-    --debug 2>&1 | grep -q "Skip"; then
+    --debug 2>&1 | tee "$TEST_OUTPUT/test3_skip.log" | grep -q "Skip\|exists"; then
     print_error "Skip-existing not working"
     exit 1
 fi
-print_success "Skip-existing works correctly"
 
-# Test 5: Force re-download
-print_info "Test 5: Testing force re-download..."
+# Verify no new files were created
+after_files=$(find "$TEST_OUTPUT/test3" -type f | wc -l)
+if validate_skip_existing "$TEST_OUTPUT/test3" "$before_files" "$after_files" "$TEST_OUTPUT/test3_skip.log"; then
+    print_success "Skip-existing works correctly"
+else
+    print_error "Skip-existing validation failed"
+    exit 1
+fi
+
+# Test 5: Force re-download with no-decompress
+print_info "Test 5: Testing force re-download with no-decompress..."
 if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
     -s "$TEST_OUTPUT/test5" \
     -p 1 \
     --force \
+    --no-decompress \
     --debug; then
     print_error "Force download failed"
     exit 1
 fi
-print_success "Force download works"
+# Check for zip files when using no-decompress
+zip_count=$(find "$TEST_OUTPUT/test5" -name "*.zip" -type f | wc -l)
+if [ "$zip_count" -eq 0 ]; then
+    print_error "No ZIP files found with --no-decompress"
+    exit 1
+fi
+print_success "Force download works with no-decompress ($zip_count ZIP files)"
 
 # Test 6: Parallel download with 3 workers
-print_info "Test 6: Testing parallel download (3 workers)..."
+print_info "Test 6: Testing parallel download (3 workers, extraction mode)..."
 mkdir -p "$TEST_OUTPUT/test6"
 start_time=$(date +%s)
 if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
@@ -123,8 +153,8 @@ fi
 end_time=$(date +%s)
 duration=$((end_time - start_time))
 
-parallel_count=$(find "$TEST_OUTPUT/test6" -name "*.zip" -type f | wc -l)
-print_success "Downloaded $parallel_count files with 3 workers in ${duration}s"
+parallel_count=$(find "$TEST_OUTPUT/test6" -mindepth 3 -maxdepth 3 -type d | wc -l)
+print_success "Downloaded and extracted $parallel_count series with 3 workers in ${duration}s"
 
 # Test 7: Check summary output
 print_info "Test 7: Checking summary output..."
@@ -154,12 +184,27 @@ fi
 
 json_count=$(find "$TEST_OUTPUT/test8" -name "*.json" -type f | wc -l)
 zip_count=$(find "$TEST_OUTPUT/test8" -name "*.zip" -type f | wc -l)
+dir_count=$(find "$TEST_OUTPUT/test8" -mindepth 3 -maxdepth 3 -type d | wc -l)
 
-if [ "$json_count" -eq 0 ] || [ "$zip_count" -ne 0 ]; then
+if [ "$json_count" -eq 0 ] || [ "$zip_count" -ne 0 ] || [ "$dir_count" -ne 0 ]; then
     print_error "Metadata-only mode not working correctly"
     exit 1
 fi
-print_success "Metadata-only download works (found $json_count JSON files)"
+
+# Validate JSON metadata files
+valid_json=0
+for json_file in $(find "$TEST_OUTPUT/test8" -name "*.json" -type f); do
+    if validate_json_metadata "$json_file" > /dev/null 2>&1; then
+        valid_json=$((valid_json + 1))
+    fi
+done
+
+if [ "$valid_json" -eq "$json_count" ]; then
+    print_success "Metadata-only download works ($json_count valid JSON files)"
+else
+    print_error "Some JSON metadata files are invalid"
+    exit 1
+fi
 
 # Final summary
 echo
@@ -169,9 +214,9 @@ echo "======================================"
 echo
 echo "Summary:"
 echo "- Binary exists and help works"
-echo "- Basic download functionality verified"
+echo "- Basic download extracts files by default"
 echo "- Skip-existing feature works"
-echo "- Force re-download works"
-echo "- Parallel downloads work"
+echo "- Force re-download with --no-decompress keeps ZIP files"
+echo "- Parallel downloads work with extraction"
 echo "- Summary output displayed"
 echo "- Metadata-only mode works"

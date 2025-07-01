@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -20,10 +22,20 @@ func newClient(proxy string, maxConnsPerHost int) *http.Client {
 		MaxConnsPerHost:     maxConnsPerHost,
 		IdleConnTimeout:     30 * time.Second,     // Server-friendly: reduced from 90s
 		TLSHandshakeTimeout: 20 * time.Second,     // Server-friendly: increased timeout
-		DisableKeepAlives:   false,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   true,
+		DisableKeepAlives:   false,                // Enable HTTP/1.1 keep-alive
+		DisableCompression:  true,                 // Disable compression to avoid issues
+		ForceAttemptHTTP2:   false,                // NBIA server doesn't support HTTP/2
+		ResponseHeaderTimeout: 30 * time.Second,   // Timeout for server response headers
+		ExpectContinueTimeout: 1 * time.Second,    // Timeout for HTTP/1.1 100-continue
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+		// Custom dialer with connection timeout
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   30 * time.Second,  // Connection timeout
+				KeepAlive: 30 * time.Second,  // TCP keep-alive
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
 	}
 
 	// Add proxy if configured

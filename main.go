@@ -111,14 +111,14 @@ func main() {
 						}
 					} else {
 						// Download images (and save metadata)
-						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false) {
+						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false, ctx.Options.NoDecompress) {
 							logger.Infof("[Worker %d] Skip existing %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
 							continue
 						}
 						
-						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force) {
-							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options.MaxRetries, ctx.Options.RetryDelay, ctx.Options.RequestDelay); err != nil {
+						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
+							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {

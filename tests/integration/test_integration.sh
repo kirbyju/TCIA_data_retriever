@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NBIA_TOOL="${SCRIPT_DIR}/../../nbia-downloader-fixed"
+NBIA_TOOL="${SCRIPT_DIR}/../../nbia-data-retriever-cli"
 TEST_OUTPUT="${SCRIPT_DIR}/../test_output"
 MANIFEST="${SCRIPT_DIR}/../fixtures/NSCLC-RADIOMICS-INTEROBSERVER1-Aug-31-2020-NBIA-manifest.tcia"
 USERNAME="${NBIA_USER:-nbia_guest}"
@@ -55,13 +55,24 @@ test1_dir="$TEST_OUTPUT/test1"
 mkdir -p "$test1_dir"
 
 # Start download and interrupt after 5 seconds
-timeout 5 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+# timeout returns 124 when it times out, which is expected
+if timeout 5 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
     -s "$test1_dir" \
     -p 3 \
-    --debug 2>&1 || true
+    --debug 2>&1; then
+    print_info "Download completed before timeout"
+else
+    exit_code=$?
+    if [ $exit_code -eq 124 ]; then
+        print_info "Download interrupted as expected (timeout)"
+    else
+        print_error "Unexpected exit code: $exit_code"
+    fi
+fi
 
-initial_count=$(find "$test1_dir" -name "*.zip" -type f | wc -l)
+# Count extracted directories (default behavior)
+initial_count=$(find "$test1_dir" -mindepth 3 -maxdepth 3 -type d | wc -l)
 print_result "Downloaded $initial_count files before interruption"
 
 # Continue download (will skip already downloaded files)
@@ -72,8 +83,14 @@ print_info "Continuing download..."
     -p 3 \
     --debug 2>&1 | tee "$test1_dir/continue.log"
 
-final_count=$(find "$test1_dir" -name "*.zip" -type f | wc -l)
-skipped=$(grep -c "already exists" "$test1_dir/continue.log" || echo 0)
+# Count extracted directories
+final_count=$(find "$test1_dir" -mindepth 3 -maxdepth 3 -type d | wc -l)
+# Count skipped messages properly
+if grep -q "already exists\|Skip" "$test1_dir/continue.log"; then
+    skipped=$(grep -c "already exists\|Skip" "$test1_dir/continue.log")
+else
+    skipped=0
+fi
 
 if [ "$final_count" -gt "$initial_count" ] && [ "$skipped" -ge "$initial_count" ]; then
     print_success "Skip-existing functionality works correctly"

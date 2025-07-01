@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -139,26 +140,20 @@ func NewToken(username, passwd, path string) (*Token, error) {
 
 // createNewToken creates a new token from the API
 func createNewToken(username, passwd, path string) (*Token, error) {
-	// format the token request url
-	url_, err := makeURL(
-		TokenUrl,
-		map[string]interface{}{
-			"username":   username,
-			"password":   passwd,
-			"client_id":  "NBIA",
-			"grant_type": "password",
-		})
-	if err != nil {
-		return nil, fmt.Errorf("error creating token URL: %v", err)
-	}
+	// Create form data
+	formData := url.Values{}
+	formData.Set("username", username)
+	formData.Set("password", passwd)
+	formData.Set("client_id", "NBIA")
+	formData.Set("grant_type", "password")
 
-	req, err := http.NewRequest("POST", url_, nil)
+	req, err := http.NewRequest("POST", TokenUrl, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to do request: %v", err)
 	}

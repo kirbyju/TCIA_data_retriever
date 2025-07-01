@@ -38,6 +38,8 @@ type Options struct {
 	MaxConnsPerHost int
 	ServerFriendly bool
 	RequestDelay time.Duration
+	MD5        bool
+	NoDecompress bool
 
 	opt *getoptions.GetOpt
 }
@@ -92,6 +94,10 @@ func InitOptions() *Options {
 		opt.opt.Description("maximum concurrent connections per host"))
 	opt.opt.BoolVar(&opt.ServerFriendly, "server-friendly", false,
 		opt.opt.Description("use extra conservative settings to avoid server issues"))
+	opt.opt.BoolVar(&opt.MD5, "md5", false,
+		opt.opt.Description("use MD5 validation for downloaded files (requires decompression)"))
+	opt.opt.BoolVar(&opt.NoDecompress, "no-decompress", false,
+		opt.opt.Description("keep downloaded files as ZIP archives (skip extraction)"))
 
 	_, err := opt.opt.Parse(os.Args[1:])
 	if err != nil {
@@ -115,6 +121,11 @@ func InitOptions() *Options {
 		fmt.Fprintf(os.Stderr, opt.opt.Help())
 		os.Exit(1)
 	}
+	
+	// Validate incompatible options
+	if opt.MD5 && opt.NoDecompress {
+		logger.Fatal("--md5 and --no-decompress are incompatible. MD5 validation requires file extraction.")
+	}
 
 	if opt.TokenUrl != "" && opt.TokenUrl != TokenUrl {
 		TokenUrl = opt.TokenUrl
@@ -125,10 +136,18 @@ func InitOptions() *Options {
 		MetaUrl = opt.MetaUrl
 		logger.Infof("Using custom meta url: %s", MetaUrl)
 	}
-	if opt.ImageUrl != "" && opt.ImageUrl != ImageUrl {
+	
+	// Set ImageUrl based on MD5 flag if not manually specified
+	if opt.ImageUrl != ImageUrl && opt.ImageUrl != "" {
+		// User specified a custom URL
 		ImageUrl = opt.ImageUrl
 		logger.Infof("Using custom image url: %s", ImageUrl)
+	} else if opt.MD5 {
+		// Try v2 API first for MD5 support (will fallback to v1 if needed)
+		ImageUrl = "https://services.cancerimagingarchive.net/nbia-api/services/v2/getImageWithMD5Hash"
+		logger.Infof("Using MD5 validation endpoint (v2 with v1 fallback)")
 	}
+	// else use default ImageUrl (v2 getImage)
 
 	if opt.Prompt {
 		logger.Infof("Please input password for %s: ", opt.Username)

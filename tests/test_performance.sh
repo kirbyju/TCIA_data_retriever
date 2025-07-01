@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NBIA_TOOL="${SCRIPT_DIR}/../nbia-downloader-fixed"
+NBIA_TOOL="${SCRIPT_DIR}/../nbia-data-retriever-cli"
 TEST_OUTPUT="${SCRIPT_DIR}/test_output"
 MANIFEST="${SCRIPT_DIR}/fixtures/NSCLC-RADIOMICS-INTEROBSERVER1-Aug-31-2020-NBIA-manifest.tcia"
 USERNAME="${NBIA_USER:-nbia_guest}"
@@ -140,13 +140,18 @@ test3_dir="$TEST_OUTPUT/test3"
 mkdir -p "$test3_dir"
 
 # Monitor memory during parallel download
-/usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+# Note: time command can fail if tool fails, so we handle both cases
+if /usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$medium_manifest" \
     -s "$test3_dir" \
     -p 20 \
     --max-connections 40 \
     --force \
-    --debug 2>&1 | tee "$test3_dir/memory.log" || true
+    --debug 2>&1 | tee "$test3_dir/memory.log"; then
+    print_info "Memory test completed successfully"
+else
+    print_info "Tool exited with error but we still check memory usage"
+fi
 
 if grep -q "Maximum resident set size" "$test3_dir/memory.log"; then
     mem_kb=$(grep "Maximum resident set size" "$test3_dir/memory.log" | awk '{print $6}')
