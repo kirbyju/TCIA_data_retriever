@@ -21,19 +21,6 @@
 
 ## Features
 
-### Key Advantages over Official NBIA Tool
-
-| Feature | Official NBIA Tool | This CLI Tool |
-|---------|-------------------|---------------|
-| **Parallel downloads** | ❌ Single threaded | ✅ Configurable (1-20+) |
-| **Resume capability** | ❌ Start over | ✅ Skip completed files |
-| **Progress tracking** | ❌ Basic | ✅ Detailed with ETA |
-| **MD5 validation** | ❌ None | ✅ Automatic by default |
-| **Metadata caching** | ❌ None | ✅ Automatic for speed |
-| **Command-line** | ❌ GUI only | ✅ Full CLI automation |
-| **Retry logic** | ❌ Manual | ✅ Automatic with backoff |
-| **Server compatibility** | ✅ Official | ✅ With v2→v1 fallback |
-
 ### Core Features
 - **Thread-safe parallel downloads** with configurable workers
 - **Automatic retry** with exponential backoff for reliability
