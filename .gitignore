@@ -5,13 +5,60 @@
 *.so
 *.dylib
 
-# Test binary, build with `go test -c`
+# Test binary, build with go test -c
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
+coverage.html
+coverage.txt
 
-#binary
+# Binary names
 nbia-data-retriever-cli
-test_output
-tests/logs/*
+nbia-data-retriever-cli-*
+
+# Build directories
+/dist/
+/build/
+/release/
+
+# GoReleaser
+dist/
+
+# Test output
+test_output/
+tests/logs/
+tests/*.log
+
+# Dependency directories
+vendor/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Archive files (built releases)
+*.tar.gz
+*.zip
+checksums.txt

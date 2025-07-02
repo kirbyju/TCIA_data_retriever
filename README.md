@@ -58,23 +58,23 @@ go build -o nbia-data-retriever-cli .
 You'll see progress output like this:
 
 ```
-Found 346 series to fetch metadata for
-[346/346] 100.0% | Fetched: 220 | Cached: 126 | Failed: 0 | ETA: 0s | Current: 1.3.6.1.4.1.14519...
+Found 18321 series to fetch metadata for
+[18321/18321] 100.0% | Fetched: 0 | Cached: 18321 | Failed: 0 | Current: 1.3.6.1.4.1.14519.5.2.1.7310.5...
 
-Downloading 346 series with 2 workers...
+Downloading 18321 series with 20 workers...
 
-[42/346] 12.1% | Downloaded: 38 | Skipped: 4 | Failed: 0 | ETA: 25m30s | Current: 1.3.6.1.4.1.14519...
+[18321/18321] 100.0% | Downloaded: 10181 | Skipped: 8140 | Failed: 0 | Current: 1.3.6.1.4.1.14519.5.2.1.7311.5...
 ```
 
 After completion:
 ```
 === Download Summary ===
-Total files: 346
-Downloaded: 338
-Skipped: 8
+Total files: 18321
+Downloaded: 10181
+Skipped: 8140
 Failed: 0
-Total time: 28m15s
-Average rate: 12.3 files/second
+Total time: 8m34s
+Average rate: 35.7 files/second
 ```
 
 ## Installation
