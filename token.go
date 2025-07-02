@@ -129,13 +129,12 @@ func NewToken(username, passwd, path string) (*Token, error) {
 		return nil, err
 	}
 
-	// Copy token data and set credentials
-	*token = *newToken
-	token.username = username
-	token.password = passwd
-	token.path = path
+	// Set credentials on the new token instead of copying
+	newToken.username = username
+	newToken.password = passwd
+	newToken.path = path
 
-	return token, nil
+	return newToken, nil
 }
 
 // createNewToken creates a new token from the API

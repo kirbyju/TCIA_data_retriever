@@ -249,10 +249,10 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 
 				// Set timeout for metadata request
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
 				req = req.WithContext(ctx)
 
 				resp, err := doRequest(httpClient, req)
+				cancel() // Cancel context after request
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to do request: %v", workerID, err)
 					metaStats.updateProgress("failed", seriesID)
@@ -420,21 +420,6 @@ func (info *FileInfo) NeedsDownload(output string, force bool, noDecompress bool
 	}
 }
 
-// calculateFileMD5 calculates MD5 hash of a file
-func calculateFileMD5(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := md5.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
 
 // extractAndVerifyZip extracts a ZIP file and verifies the total uncompressed size and optional MD5 hashes
 func extractAndVerifyZip(zipPath string, destDir string, expectedSize int64, md5Map map[string]string) error {
@@ -453,7 +438,7 @@ func extractAndVerifyZip(zipPath string, destDir string, expectedSize int64, md5
 	var md5Errors []string
 
 	// Check if we're in MD5 validation mode
-	md5Mode := md5Map != nil && len(md5Map) > 0
+	md5Mode := len(md5Map) > 0
 
 	// Extract files
 	for _, file := range reader.File {
@@ -470,7 +455,9 @@ func extractAndVerifyZip(zipPath string, destDir string, expectedSize int64, md5
 		}
 
 		if file.FileInfo().IsDir() {
-			os.MkdirAll(path, file.Mode())
+			if err := os.MkdirAll(path, file.Mode()); err != nil {
+				return fmt.Errorf("failed to create directory: %v", err)
+			}
 			continue
 		}
 

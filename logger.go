@@ -56,6 +56,6 @@ func setLogger(debug bool, logfile string) {
 		logger_ = zap.New(core, zap.AddCaller())
 	}
 
-	defer logger_.Sync()
+	defer func() { _ = logger_.Sync() }()
 	logger = logger_.Sugar()
 }

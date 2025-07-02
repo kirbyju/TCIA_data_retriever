@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -77,7 +76,7 @@ func UnTar(dst string, r io.Reader) error {
 // ToJSON as name says
 func ToJSON(files []*FileInfo, output string) {
 	rankingsJSON, _ := json.MarshalIndent(files, "", "    ")
-	err := ioutil.WriteFile(output, rankingsJSON, 0644)
+	err := os.WriteFile(output, rankingsJSON, 0644)
 
 	if err != nil {
 		log.Error().Msgf("%v", err)
