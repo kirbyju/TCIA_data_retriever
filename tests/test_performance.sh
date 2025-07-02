@@ -64,7 +64,7 @@ small_manifest="${SCRIPT_DIR}/fixtures/small_manifest.tcia"
 start_time=$(date +%s.%N)
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$small_manifest" \
-    -s "$test1_dir/pooled" \
+    -o "$test1_dir/pooled" \
     -p 5 \
     --max-connections 10 \
     --debug 2>&1 | tee "$test1_dir/pooled.log"
@@ -74,7 +74,7 @@ pooled_time=$(echo "$(date +%s.%N) - $start_time" | bc)
 start_time=$(date +%s.%N)
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$small_manifest" \
-    -s "$test1_dir/single" \
+    -o "$test1_dir/single" \
     -p 5 \
     --max-connections 1 \
     --force \
@@ -113,7 +113,7 @@ for workers in 1 2 4 8 16; do
     start_time=$(date +%s.%N)
     "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
         -i "$medium_manifest" \
-        -s "$test2_dir/workers_$workers" \
+        -o "$test2_dir/workers_$workers" \
         -p $workers \
         --max-connections $((workers * 2)) \
         --debug > "$test2_dir/workers_$workers.log" 2>&1
@@ -143,7 +143,7 @@ mkdir -p "$test3_dir"
 # Note: time command can fail if tool fails, so we handle both cases
 if /usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$medium_manifest" \
-    -s "$test3_dir" \
+    -o "$test3_dir" \
     -p 20 \
     --max-connections 40 \
     --force \
@@ -177,7 +177,7 @@ mkdir -p "$test4_dir"
 # Run with debug to see connection info
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$small_manifest" \
-    -s "$test4_dir" \
+    -o "$test4_dir" \
     -p 1 \
     --force \
     --debug 2>&1 | tee "$test4_dir/connections.log"
@@ -204,7 +204,7 @@ for workers in 1 2 3 5 8 10 15 20; do
     
     if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
         -i "$small_manifest" \
-        -s "$test5_dir/workers_$workers" \
+        -o "$test5_dir/workers_$workers" \
         -p $workers \
         --force \
         --debug > "$test5_dir/workers_$workers.log" 2>&1; then
@@ -234,7 +234,7 @@ mkdir -p "$test6_dir"
 start_time=$(date +%s.%N)
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$medium_manifest" \
-    -s "$test6_dir" \
+    -o "$test6_dir" \
     -p 10 \
     --force \
     --debug 2>&1 | tee "$test6_dir/bandwidth.log"

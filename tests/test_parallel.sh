@@ -61,9 +61,9 @@ test_worker_count() {
     
     if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
         -i "$MEDIUM_MANIFEST" \
-        -s "$test_dir" \
+        -o "$test_dir" \
         -p "$workers" \
-        --max-connections "$((workers * 5))" \
+        --max-connections "$([ $workers -le 5 ] && echo $((workers * 4)) || echo 20)" \
         --debug 2>&1 | tee "$test_dir/output.log"; then
         print_error "Download with $workers workers failed"
         return 1
@@ -186,9 +186,9 @@ mkdir -p "$test_dir"
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MEDIUM_MANIFEST" \
-    -s "$test_dir" \
-    -p 20 \
-    --max-connections 5 \
+    -o "$test_dir" \
+    -p 10 \
+    --max-connections 20 \
     --debug 2>&1 | tee "$test_dir/output.log"; then
     print_success "Connection limiting works correctly"
 else

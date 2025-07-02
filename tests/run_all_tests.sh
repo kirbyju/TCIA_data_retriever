@@ -108,6 +108,7 @@ run_test "parallel_test" "$SCRIPT_DIR/test_parallel.sh" 180
 run_test "integration_test" "$SCRIPT_DIR/integration/test_integration.sh" 300
 run_test "advanced_features_test" "$SCRIPT_DIR/test_advanced_features.sh" 180
 run_test "md5_nodecompress_test" "$SCRIPT_DIR/test_md5_nodecompress.sh" 180
+run_test "metadata_caching_test" "$SCRIPT_DIR/test_metadata_caching.sh" 180
 run_test "performance_test" "$SCRIPT_DIR/test_performance.sh" 300
 
 # Final report
@@ -146,6 +147,8 @@ echo "✓ MD5 checksum verification"
 echo "✓ MD5 validation mode (--md5)"
 echo "✓ No-decompress mode (--no-decompress)"
 echo "✓ Automatic ZIP extraction (default)"
+echo "✓ Metadata caching with cache/miss detection"
+echo "✓ Force metadata refresh (--refresh-metadata)"
 echo "✓ Proxy support"
 echo "✓ Custom API URL"
 echo "✓ Rate limiting handling"

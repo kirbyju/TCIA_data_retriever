@@ -38,8 +38,9 @@ type Options struct {
 	MaxConnsPerHost int
 	ServerFriendly bool
 	RequestDelay time.Duration
-	MD5        bool
+	NoMD5      bool
 	NoDecompress bool
+	RefreshMetadata bool
 
 	opt *getoptions.GetOpt
 }
@@ -64,8 +65,8 @@ func InitOptions() *Options {
 		opt.opt.Description("show version information"))
 	opt.opt.StringVar(&opt.Input, "input", "", opt.opt.Alias("i"),
 		opt.opt.Description("path to input tcia file"))
-	opt.opt.StringVar(&opt.Output, "output", "./", opt.opt.Alias("s"),
-		opt.opt.Description("Output directory, or output file when --meta enabled"))
+	opt.opt.StringVar(&opt.Output, "output", "./", opt.opt.Alias("o"),
+		opt.opt.Description("Output directory for downloaded files"))
 	opt.opt.StringVar(&opt.Proxy, "proxy", "", opt.opt.Alias("x"),
 		opt.opt.Description("the proxy to use [http, socks5://user:passwd@host:port]"))
 	opt.opt.IntVar(&opt.Concurrent, "processes", 2, opt.opt.Alias("p"),
@@ -94,10 +95,12 @@ func InitOptions() *Options {
 		opt.opt.Description("maximum concurrent connections per host"))
 	opt.opt.BoolVar(&opt.ServerFriendly, "server-friendly", false,
 		opt.opt.Description("use extra conservative settings to avoid server issues"))
-	opt.opt.BoolVar(&opt.MD5, "md5", false,
-		opt.opt.Description("use MD5 validation for downloaded files (requires decompression)"))
+	opt.opt.BoolVar(&opt.NoMD5, "no-md5", false,
+		opt.opt.Description("disable MD5 validation for downloaded files"))
 	opt.opt.BoolVar(&opt.NoDecompress, "no-decompress", false,
 		opt.opt.Description("keep downloaded files as ZIP archives (skip extraction)"))
+	opt.opt.BoolVar(&opt.RefreshMetadata, "refresh-metadata", false,
+		opt.opt.Description("force refresh all metadata from server (ignore cache)"))
 
 	_, err := opt.opt.Parse(os.Args[1:])
 	if err != nil {
@@ -118,13 +121,13 @@ func InitOptions() *Options {
 	}
 
 	if opt.opt.Called("help") || len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, opt.opt.Help())
+		fmt.Fprintf(os.Stderr, "%s", opt.opt.Help())
 		os.Exit(1)
 	}
 	
 	// Validate incompatible options
-	if opt.MD5 && opt.NoDecompress {
-		logger.Fatal("--md5 and --no-decompress are incompatible. MD5 validation requires file extraction.")
+	if !opt.NoMD5 && opt.NoDecompress {
+		logger.Fatal("MD5 validation (default) and --no-decompress are incompatible. Use --no-md5 with --no-decompress.")
 	}
 
 	if opt.TokenUrl != "" && opt.TokenUrl != TokenUrl {
@@ -142,7 +145,7 @@ func InitOptions() *Options {
 		// User specified a custom URL
 		ImageUrl = opt.ImageUrl
 		logger.Infof("Using custom image url: %s", ImageUrl)
-	} else if opt.MD5 {
+	} else if !opt.NoMD5 {
 		// Try v2 API first for MD5 support (will fallback to v1 if needed)
 		ImageUrl = "https://services.cancerimagingarchive.net/nbia-api/services/v2/getImageWithMD5Hash"
 		logger.Infof("Using MD5 validation endpoint (v2 with v1 fallback)")

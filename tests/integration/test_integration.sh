@@ -58,7 +58,7 @@ mkdir -p "$test1_dir"
 # timeout returns 124 when it times out, which is expected
 if timeout 5 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test1_dir" \
+    -o "$test1_dir" \
     -p 3 \
     --debug 2>&1; then
     print_info "Download completed before timeout"
@@ -79,7 +79,7 @@ print_result "Downloaded $initial_count files before interruption"
 print_info "Continuing download..."
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test1_dir" \
+    -o "$test1_dir" \
     -p 3 \
     --debug 2>&1 | tee "$test1_dir/continue.log"
 
@@ -109,7 +109,7 @@ mkdir -p "$test2_dir"
 
 if "$NBIA_TOOL" -u "invalid_user" --passwd "wrong_password" \
     -i "$MANIFEST" \
-    -s "$test2_dir" \
+    -o "$test2_dir" \
     -p 1 \
     --max-retries 1 \
     --debug 2>&1 | grep -q "401\|403\|unauthorized\|failed"; then
@@ -138,7 +138,7 @@ EOF
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$test3_dir/timeout_manifest.tcia" \
-    -s "$test3_dir" \
+    -o "$test3_dir" \
     -p 1 \
     --max-retries 2 \
     --debug 2>&1 | tee "$test3_dir/timeout.log"; then
@@ -164,7 +164,7 @@ head -n 9 "$MANIFEST" > "$test4_dir/small_test.tcia"
 
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$test4_dir/small_test.tcia" \
-    -s "$test4_dir" \
+    -o "$test4_dir" \
     -p 1 \
     --debug 2>&1 | tee "$test4_dir/size_verify.log"
 
@@ -185,7 +185,7 @@ chmod 555 "$test5_dir/readonly"
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5_dir/readonly" \
+    -o "$test5_dir/readonly" \
     -p 1 \
     --max-retries 1 \
     --debug 2>&1 | grep -q "permission\|denied\|failed"; then
@@ -215,7 +215,7 @@ EOF
 # Run with expired token - should refresh automatically
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$SCRIPT_DIR/../fixtures/small_manifest.tcia" \
-    -s "$test6_dir" \
+    -o "$test6_dir" \
     -p 1 \
     --debug 2>&1 | tee "$test6_dir/token.log"; then
     
@@ -238,7 +238,7 @@ mkdir -p "$test7_dir"
 # Use small manifest for stress test
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$SCRIPT_DIR/../fixtures/small_manifest.tcia" \
-    -s "$test7_dir" \
+    -o "$test7_dir" \
     -p 20 \
     --max-connections 10 \
     --debug 2>&1 | tee "$test7_dir/stress.log"; then

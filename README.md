@@ -9,11 +9,13 @@
 - **Server-friendly operation** - Configurable delays and connection limits to avoid server issues
 - **Automatic retry with exponential backoff** - Handles transient failures gracefully
 - **File verification** - Size and MD5 checksum validation
-- **MD5 validation mode** - Enhanced integrity checking with server-provided MD5 hashes
+- **MD5 validation by default** - Automatic integrity checking with server-provided MD5 hashes
+- **Metadata caching** - Cache metadata locally for faster subsequent runs
 - **Flexible storage options** - Choose between extracted DICOM files or compressed ZIP archives
 - **Comprehensive test suite** - Smoke, parallel, integration, and performance tests
 - **Connection pooling** - HTTP/1.1 with efficient connection reuse
-- **Progress tracking** - Real-time download progress with size and speed indicators
+- **Overall progress tracking** - Real-time progress display with ETA calculation
+- **Study UID organization** - Files organized by Patient ID and Study UID for better structure
 
 ## Installation
 
@@ -23,7 +25,7 @@ Download the latest release from the releases page.
 ### 2. Build from Source
 
 ```bash
-git clone https://github.com/GrigoryEvko/NBIA_data_retriever_CLI.git
+git clone https://github.com/ygidtu/NBIA_data_retriever_CLI.git
 cd NBIA_data_retriever_CLI
 go mod tidy   # prepare the dependencies
 
@@ -38,7 +40,7 @@ python build.py --platform linux --arch amd64
 
 ```bash
 # Build docker image
-git clone https://github.com/GrigoryEvko/NBIA_data_retriever_CLI.git
+git clone https://github.com/ygidtu/NBIA_data_retriever_CLI.git
 cd NBIA_data_retriever_CLI
 docker build -t nbia .
 
@@ -51,18 +53,19 @@ docker run --rm -v $PWD:$PWD -w $PWD nbia --help
 ```bash
 SYNOPSIS:
     nbia-data-retriever-cli [--debug] [--help|-h] [--input|-i <string>]
-                    [--output|-s <string>] [--processes|-p <int>]
+                    [--output|-o <string>] [--processes|-p <int>]
                     [--user|-u <string>] [--passwd <string>]
                     [--max-connections <int>] [--max-retries <int>]
                     [--server-friendly] [--force|-f] [--skip-existing]
                     [--proxy|-x <string>] [--meta|-m] [--save-log]
-                    [--md5] [--no-decompress] [--version|-v]
+                    [--no-md5] [--no-decompress] [--refresh-metadata]
+                    [--version|-v]
 
 OPTIONS:
     --debug                 Show debug information (default: false)
     --help|-h               Show help information
     --input|-i <string>     Path to TCIA manifest file (required)
-    --output|-s <string>    Output directory (default: "./")
+    --output|-o <string>    Output directory (default: "./")
     --processes|-p <int>    Number of parallel downloads (default: 2)
     --user|-u <string>      Username for authentication (default: "nbia_guest")
     --passwd <string>       Password for authentication
@@ -77,8 +80,9 @@ OPTIONS:
     --proxy|-x <string>     Proxy URL [http, socks5://user:pass@host:port]
     --meta|-m               Only download metadata
     --save-log              Save debug log to progress.log
-    --md5                   Enable MD5 validation for downloaded files
+    --no-md5                Disable MD5 validation for downloaded files
     --no-decompress         Keep downloaded files as ZIP archives (skip extraction)
+    --refresh-metadata      Force refresh all metadata from server (ignore cache)
     --version|-v            Show version information
 ```
 
@@ -103,18 +107,24 @@ OPTIONS:
 # Force re-download all files
 ./nbia-data-retriever-cli -i manifest.tcia --force
 
-# Download with MD5 validation
-./nbia-data-retriever-cli -i manifest.tcia --md5
+# Download without MD5 validation (faster but less secure)
+./nbia-data-retriever-cli -i manifest.tcia --no-md5
 
-# Keep files as ZIP archives (don't extract)
-./nbia-data-retriever-cli -i manifest.tcia --no-decompress
+# Keep files as ZIP archives (requires --no-md5)
+./nbia-data-retriever-cli -i manifest.tcia --no-md5 --no-decompress
+
+# Force refresh all metadata (ignore cache)
+./nbia-data-retriever-cli -i manifest.tcia --refresh-metadata
+
+# Specify output directory
+./nbia-data-retriever-cli -i manifest.tcia -o /path/to/output
 ```
 
 ## Advanced Usage Examples
 
 ```bash
 # Download to specific directory with debug logging
-./nbia-data-retriever-cli -i manifest.tcia -s /data/medical/images --debug --save-log
+./nbia-data-retriever-cli -i manifest.tcia -o /data/medical/images --debug --save-log
 
 # Use proxy with authentication
 ./nbia-data-retriever-cli -i manifest.tcia --proxy socks5://user:pass@proxy.example.com:1080
@@ -123,7 +133,7 @@ OPTIONS:
 ./nbia-data-retriever-cli -i manifest.tcia -p 10 --max-connections 20 --max-retries 5
 
 # Download only metadata (no images)
-./nbia-data-retriever-cli -i manifest.tcia --meta -s metadata.json
+./nbia-data-retriever-cli -i manifest.tcia --meta -o metadata.json
 
 # Prompt for password (secure input)
 ./nbia-data-retriever-cli -i manifest.tcia -u myusername --prompt
@@ -132,7 +142,7 @@ OPTIONS:
 ./nbia-data-retriever-cli -i large_dataset.tcia \
   -u myusername \
   --passwd mypassword \
-  -s /large/storage/path \
+  -o /large/storage/path \
   -p 8 \
   --max-connections 16 \
   --skip-existing \
@@ -198,15 +208,15 @@ This enables:
 
 ## MD5 Validation and Storage Options
 
-### MD5 Validation Mode
+### MD5 Validation (Default)
 
-Enable MD5 checksum validation for enhanced data integrity:
+MD5 checksum validation is enabled by default for data integrity. To disable:
 
 ```bash
-./nbia-data-retriever-cli -i manifest.tcia --md5
+./nbia-data-retriever-cli -i manifest.tcia --no-md5
 ```
 
-This mode:
+MD5 validation:
 - Uses the NBIA MD5 API endpoint
 - Validates each file against server-provided MD5 hashes
 - Ensures complete and uncorrupted downloads
@@ -217,8 +227,10 @@ This mode:
 Keep downloaded files as ZIP archives without extraction:
 
 ```bash
-./nbia-data-retriever-cli -i manifest.tcia --no-decompress
+./nbia-data-retriever-cli -i manifest.tcia --no-md5 --no-decompress
 ```
+
+Note: `--no-decompress` requires `--no-md5` because MD5 validation needs extracted files.
 
 This mode:
 - Preserves original ZIP files from NBIA
@@ -233,6 +245,45 @@ By default, the tool automatically extracts ZIP files to directories containing 
 - Files are extracted and verified
 - Original ZIP files are deleted after successful extraction
 - DICOM files are organized in series-specific directories
+
+## Metadata Caching
+
+The tool caches metadata locally to improve performance on subsequent runs:
+
+### Cache Behavior
+- **Default**: Uses cached metadata, only fetches missing series from server
+- **Force refresh**: Use `--refresh-metadata` to ignore cache and fetch all metadata fresh
+
+### Cache Location
+Metadata is stored in `output_directory/metadata/` as individual JSON files:
+```
+output_directory/
+├── metadata/
+│   ├── SeriesUID.json
+│   └── ...
+└── PatientID/
+    └── StudyUID/
+        └── SeriesUID/
+            └── DICOM files
+```
+
+### Benefits
+- **Faster subsequent runs**: No need to query server for cached metadata
+- **Reduced server load**: Fewer API calls
+- **Offline capability**: Can work with cached metadata without network access
+- **Incremental updates**: Only fetch metadata for new series in manifest
+
+## Directory Structure
+
+Files are organized using a hierarchical structure:
+- **Patient ID**: Top-level directory (e.g., ProstateX-0001)
+- **Study UID**: Unique identifier for each study/examination
+- **Series UID**: Directory containing DICOM files for each series
+
+This structure ensures:
+- No conflicts when a patient has multiple studies
+- Easy navigation by patient and study
+- Compatibility with DICOM viewers expecting this hierarchy
 
 ## Testing
 

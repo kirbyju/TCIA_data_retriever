@@ -55,7 +55,7 @@ mkdir -p "$test1_dir"
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test1_dir" \
+    -o "$test1_dir" \
     -p 1 \
     --debug 2>&1 | tee "$test1_dir/output.log"; then
     
@@ -78,15 +78,16 @@ fi
 
 echo
 
-# Test 2: No-decompress mode (keep ZIP files)
-print_info "Test 2: Testing no-decompress mode..."
+# Test 2: No-decompress mode (keep ZIP files) - requires --no-md5
+print_info "Test 2: Testing no-decompress mode with --no-md5..."
 test2_dir="$TEST_OUTPUT/test2_nodecompress"
 mkdir -p "$test2_dir"
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test2_dir" \
+    -o "$test2_dir" \
     -p 1 \
+    --no-md5 \
     --no-decompress \
     --debug 2>&1 | tee "$test2_dir/output.log"; then
     
@@ -113,30 +114,31 @@ fi
 
 echo
 
-# Test 3: MD5 validation mode
-print_info "Test 3: Testing MD5 validation mode..."
+# Test 3: MD5 validation mode (default)
+print_info "Test 3: Testing MD5 validation mode (default)..."
 test3_dir="$TEST_OUTPUT/test3_md5"
 mkdir -p "$test3_dir"
 
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test3_dir" \
+    -o "$test3_dir" \
     -p 1 \
-    --md5 \
     --debug 2>&1 | tee "$test3_dir/output.log"; then
     
-    # Check for MD5 validation in logs
-    if grep -q "MD5\|hash\|validation\|verified" "$test3_dir/output.log"; then
-        print_success "MD5 validation messages found in logs"
-        
-        # Check if using v1 API endpoint
-        if grep -q "v1/getImageWithMD5Hash" "$test3_dir/output.log"; then
-            print_success "Using correct v1 MD5 API endpoint"
-        else
-            print_error "Not using MD5 API endpoint"
-        fi
+    # Source helper functions
+    source "${SCRIPT_DIR}/test_helpers.sh"
+    
+    # Check for actual MD5 verification
+    if validate_md5_verification "$test3_dir/output.log"; then
+        print_success "MD5 validation verified"
     else
-        print_info "MD5 validation not explicitly shown in logs"
+        # Check if using MD5 API endpoint as fallback
+        if grep -q "getImageWithMD5Hash" "$test3_dir/output.log"; then
+            print_success "Using MD5 API endpoint (validation implicit)"
+        else
+            print_error "MD5 validation not working properly"
+            exit 1
+        fi
     fi
     
     # Files should be extracted when using MD5
@@ -144,6 +146,32 @@ if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
         print_success "Files extracted (required for MD5 validation)"
     else
         print_error "Files not extracted (MD5 requires extraction)"
+        exit 1
+    fi
+else
+    print_error "Download failed"
+    exit 1
+fi
+
+echo
+
+# Test 3b: Disabling MD5 validation
+print_info "Test 3b: Testing --no-md5 option..."
+test3b_dir="$TEST_OUTPUT/test3b_no_md5"
+mkdir -p "$test3b_dir"
+
+if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+    -i "$MANIFEST" \
+    -o "$test3b_dir" \
+    -p 1 \
+    --no-md5 \
+    --debug 2>&1 | tee "$test3b_dir/output.log"; then
+    
+    # Check that MD5 validation is NOT in logs
+    if grep -q "MD5 verified" "$test3b_dir/output.log"; then
+        print_error "MD5 validation occurred when it should be disabled"
+    else
+        print_success "MD5 validation disabled with --no-md5"
     fi
 else
     print_error "Download failed"
@@ -151,21 +179,50 @@ fi
 
 echo
 
-# Test 4: Incompatible options (MD5 + no-decompress)
-print_info "Test 4: Testing incompatible options (MD5 + no-decompress)..."
+# Test 4: Incompatible options (default MD5 + no-decompress)
+print_info "Test 4: Testing incompatible options (default MD5 + no-decompress)..."
 test4_dir="$TEST_OUTPUT/test4_incompatible"
 mkdir -p "$test4_dir"
 
+# This should fail with incompatible options error
+error_output=$("$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+    -i "$MANIFEST" \
+    -o "$test4_dir" \
+    -p 1 \
+    --no-decompress \
+    --debug 2>&1 || true)
+
+if echo "$error_output" | grep -q "incompatible\|cannot.*use.*together\|requires.*--no-md5"; then
+    print_success "Correctly rejected incompatible options (MD5 is default)"
+else
+    print_error "Should have rejected default MD5 with --no-decompress"
+    echo "Error output: $error_output" | head -5
+    exit 1
+fi
+
+echo
+
+# Test 4b: Compatible options (--no-md5 + --no-decompress)
+print_info "Test 4b: Testing compatible options (--no-md5 + --no-decompress)..."
+test4b_dir="$TEST_OUTPUT/test4b_compatible"
+mkdir -p "$test4b_dir"
+
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test4_dir" \
+    -o "$test4b_dir" \
     -p 1 \
-    --md5 \
+    --no-md5 \
     --no-decompress \
-    --debug 2>&1 | grep -q "incompatible"; then
-    print_success "Correctly rejected incompatible options"
+    --debug 2>&1 | tee "$test4b_dir/output.log"; then
+    
+    # Check for ZIP files
+    if find "$test4b_dir" -name "*.zip" | grep -q .; then
+        print_success "Successfully used --no-md5 with --no-decompress"
+    else
+        print_error "No ZIP files found"
+    fi
 else
-    print_error "Should have rejected --md5 with --no-decompress"
+    print_error "Download failed with compatible options"
 fi
 
 echo
@@ -176,39 +233,58 @@ test5_dir="$TEST_OUTPUT/test5_skip"
 mkdir -p "$test5_dir"
 
 # First download with decompress
-"$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5_dir" \
+    -o "$test5_dir" \
     -p 1 \
-    --debug > "$test5_dir/first_run.log" 2>&1 || true
+    --debug > "$test5_dir/first_run.log" 2>&1; then
+    print_error "First download failed"
+    exit 1
+fi
+
+# Count files before skip test
+before_files=$(find "$test5_dir" -type f | wc -l)
 
 # Try again with skip-existing
-if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
+if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5_dir" \
+    -o "$test5_dir" \
     -p 1 \
     --skip-existing \
-    --debug 2>&1 | tee "$test5_dir/skip_run.log" | grep -q "Skip\|exists"; then
+    --debug 2>&1 | tee "$test5_dir/skip_run.log"; then
+    print_error "Skip-existing run failed"
+    exit 1
+fi
+
+# Verify files were skipped
+after_files=$(find "$test5_dir" -type f | wc -l)
+source "${SCRIPT_DIR}/test_helpers.sh"
+if validate_skip_existing "$test5_dir" "$before_files" "$after_files" "$test5_dir/skip_run.log"; then
     print_success "Skip-existing works for decompressed files"
+else
+    print_error "Skip-existing validation failed"
+    exit 1
 fi
 
 # Now try with no-decompress in a new directory
 test5b_dir="$TEST_OUTPUT/test5b_skip_zip"
 mkdir -p "$test5b_dir"
 
-# First download with no-decompress
+# First download with no-decompress (requires --no-md5)
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5b_dir" \
+    -o "$test5b_dir" \
     -p 1 \
+    --no-md5 \
     --no-decompress \
     --debug > "$test5b_dir/first_run.log" 2>&1 || true
 
 # Try again with skip-existing
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5b_dir" \
+    -o "$test5b_dir" \
     -p 1 \
+    --no-md5 \
     --no-decompress \
     --skip-existing \
     --debug 2>&1 | tee "$test5b_dir/skip_run.log" | grep -q "Skip\|exists"; then
@@ -225,14 +301,14 @@ mkdir -p "$test6_dir"
 # First download
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test6_dir" \
+    -o "$test6_dir" \
     -p 1 \
     --debug > "$test6_dir/first_run.log" 2>&1 || true
 
 # Force re-download
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test6_dir" \
+    -o "$test6_dir" \
     -p 1 \
     --force \
     --debug 2>&1 | tee "$test6_dir/force_run.log" | grep -q "Force\|re-download"; then
@@ -249,7 +325,7 @@ echo
 echo "Tests completed:"
 echo "1. Default decompress behavior - Check"
 echo "2. No-decompress mode (ZIP preservation) - Check"
-echo "3. MD5 validation mode - Check"
+echo "3. MD5 validation mode (default) - Check"
 echo "4. Incompatible options detection - Check"
 echo "5. Skip-existing with both modes - Check"
 echo "6. Force re-download - Check"

@@ -30,7 +30,8 @@ validate_dicom_directory() {
     if [ -n "$first_file" ]; then
         # DICOM files should have "DICM" at offset 128
         if ! dd if="$first_file" bs=1 skip=128 count=4 2>/dev/null | grep -q "DICM"; then
-            echo "WARNING: File $first_file may not be a valid DICOM file"
+            echo "ERROR: File $first_file is not a valid DICOM file"
+            return 1
         fi
     fi
     
@@ -82,10 +83,13 @@ validate_skip_existing() {
     if [ -f "$log_file" ]; then
         local skip_count=$(grep -c "Skip\|already exists\|skipping" "$log_file" || echo 0)
         if [ "$skip_count" -eq 0 ]; then
-            echo "ERROR: No skip messages found in log"
+            echo "ERROR: No skip messages found in log - files may have been re-downloaded"
             return 1
         fi
         echo "OK: Found $skip_count skip messages in log"
+    else
+        echo "ERROR: Log file not found for skip validation"
+        return 1
     fi
     
     echo "OK: Skip-existing validation passed"
@@ -144,13 +148,65 @@ validate_md5_verification() {
     if grep -q "MD5 verified\|checksum.*match\|validation.*passed" "$log_file"; then
         echo "OK: MD5 verification messages found"
         return 0
-    else
-        echo "WARNING: No explicit MD5 verification messages found"
-        # Check if using MD5 endpoint
-        if grep -q "getImageWithMD5Hash" "$log_file"; then
-            echo "OK: Using MD5 validation endpoint"
-            return 0
-        fi
+    fi
+    
+    # Must have explicit verification, not just endpoint usage
+    echo "ERROR: No MD5 verification messages found in log"
+    return 1
+}
+
+# Validate metadata cache was actually used
+validate_cache_usage() {
+    local cache_dir="$1"
+    local log_file="$2"
+    local expected_hits="${3:-1}"  # Minimum expected cache hits
+    
+    if [ ! -d "$cache_dir" ]; then
+        echo "ERROR: Cache directory $cache_dir does not exist"
         return 1
     fi
+    
+    if [ ! -f "$log_file" ]; then
+        echo "ERROR: Log file $log_file not found"
+        return 1
+    fi
+    
+    # Count actual cache hits in log
+    local cache_hits=$(grep -c "Loaded metadata from cache" "$log_file" || echo 0)
+    
+    if [ "$cache_hits" -lt "$expected_hits" ]; then
+        echo "ERROR: Expected at least $expected_hits cache hits, found $cache_hits"
+        return 1
+    fi
+    
+    # Verify cache files exist and are valid JSON
+    local cache_files=$(find "$cache_dir" -name "*.json" -type f | wc -l)
+    if [ "$cache_files" -eq 0 ]; then
+        echo "ERROR: No cache files found in $cache_dir"
+        return 1
+    fi
+    
+    echo "OK: Found $cache_hits cache hits and $cache_files cache files"
+    return 0
+}
+
+# Verify file was not re-downloaded by checking modification time
+validate_file_not_modified() {
+    local file="$1"
+    local original_mtime="$2"
+    
+    if [ ! -f "$file" ]; then
+        echo "ERROR: File $file does not exist"
+        return 1
+    fi
+    
+    local current_mtime=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null)
+    
+    if [ "$current_mtime" -ne "$original_mtime" ]; then
+        echo "ERROR: File $file was modified (mtime changed from $original_mtime to $current_mtime)"
+        return 1
+    fi
+    
+    echo "OK: File $file was not modified"
+    return 0
 }

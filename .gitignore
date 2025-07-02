@@ -13,5 +13,5 @@
 
 #binary
 nbia-data-retriever-cli
-test_output/*
+test_output
 tests/logs/*

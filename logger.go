@@ -35,7 +35,7 @@ func timeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 // setLogger init the zap logger
 func setLogger(debug bool, logfile string) {
 	encoder := newEncoderConfig()
-	level := zap.InfoLevel
+	level := zap.WarnLevel
 	if debug {
 		level = zap.DebugLevel
 	}

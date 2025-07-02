@@ -20,13 +20,142 @@ import (
 	"time"
 )
 
+// MetadataStats tracks metadata fetching progress
+type MetadataStats struct {
+	Total         int
+	Fetched       int32
+	Cached        int32
+	Failed        int32
+	StartTime     time.Time
+	LastUpdate    time.Time
+	CurrentSeries string
+	mu            sync.Mutex
+}
+
+// updateMetadataProgress updates and displays metadata fetching progress
+func (m *MetadataStats) updateProgress(action string, seriesID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	// Update current series
+	m.CurrentSeries = seriesID
+	
+	switch action {
+	case "fetched":
+		m.Fetched++
+	case "cached":
+		m.Cached++
+	case "failed":
+		m.Failed++
+	}
+	
+	completed := int(m.Fetched + m.Cached + m.Failed)
+	now := time.Now()
+	
+	// Update display at most once per 100ms or when complete
+	if now.Sub(m.LastUpdate) < 100*time.Millisecond && completed != m.Total {
+		return
+	}
+	m.LastUpdate = now
+	
+	if m.Total > 0 {
+		percentage := float64(completed) * 100.0 / float64(m.Total)
+		
+		// Calculate ETA based on fetch rate
+		elapsed := time.Since(m.StartTime)
+		var eta string
+		if m.Fetched > 0 && elapsed > 0 {
+			rate := float64(m.Fetched) / elapsed.Seconds()
+			remainingToFetch := float64(m.Total - int(m.Cached) - int(m.Fetched) - int(m.Failed))
+			if remainingToFetch > 0 && rate > 0 {
+				remainingTime := remainingToFetch / rate
+				etaDuration := time.Duration(remainingTime * float64(time.Second))
+				eta = fmt.Sprintf(" | ETA: %s", etaDuration.Round(time.Second))
+			}
+		}
+		
+		// Truncate series ID for display
+		displayID := m.CurrentSeries
+		if len(displayID) > 30 {
+			displayID = displayID[:30] + "..."
+		}
+		
+		// Clear line and print progress - identical format to download progress
+		fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d] %.1f%% | Fetched: %d | Cached: %d | Failed: %d%s | Current: %s",
+			completed, m.Total, percentage,
+			m.Fetched, m.Cached, m.Failed,
+			eta, displayID)
+		
+		if completed == m.Total {
+			fmt.Fprintf(os.Stderr, "\n")
+		}
+	}
+}
+
 var (
 	// Directory creation mutex
 	dirMutex sync.Mutex
+	// Metadata cache mutex
+	metaMutex sync.Mutex
 )
 
+// getMetadataCachePath returns the path for cached metadata
+func getMetadataCachePath(output, seriesUID string) string {
+	return filepath.Join(output, "metadata", fmt.Sprintf("%s.json", seriesUID))
+}
+
+// createMetadataDir creates the metadata directory if it doesn't exist
+func createMetadataDir(output string) error {
+	metaDir := filepath.Join(output, "metadata")
+	if _, err := os.Stat(metaDir); os.IsNotExist(err) {
+		return os.MkdirAll(metaDir, 0755)
+	}
+	return nil
+}
+
+// loadMetadataFromCache loads metadata from cache file
+func loadMetadataFromCache(cachePath string) (*FileInfo, error) {
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	
+	var info FileInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+	
+	return &info, nil
+}
+
+// saveMetadataToCache saves metadata to cache file
+func saveMetadataToCache(info *FileInfo, cachePath string) error {
+	metaMutex.Lock()
+	defer metaMutex.Unlock()
+	
+	// Ensure directory exists
+	dir := filepath.Dir(cachePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	
+	// Write to temp file first for atomic operation
+	tempFile := cachePath + ".tmp"
+	data, err := json.MarshalIndent(info, "", "\t")
+	if err != nil {
+		return err
+	}
+	
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		return err
+	}
+	
+	// Atomic rename
+	return os.Rename(tempFile, cachePath)
+}
+
 // decodeTCIA is used to decode the tcia file with parallel metadata fetching
-func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileInfo {
+func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
 	logger.Debugf("decoding tcia file: %s", path)
 	
 	f, err := os.Open(path)
@@ -48,7 +177,13 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 		logger.Errorf("error reading tcia file: %v", err)
 	}
 	
-	logger.Infof("Found %d series to fetch metadata for", len(seriesIDs))
+	fmt.Printf("Found %d series to fetch metadata for\n", len(seriesIDs))
+	
+	// Initialize metadata stats
+	metaStats := &MetadataStats{
+		Total:     len(seriesIDs),
+		StartTime: time.Now(),
+	}
 	
 	// Use parallel workers to fetch metadata
 	const metadataWorkers = 20
@@ -70,17 +205,36 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 			defer wg.Done()
 			
 			for seriesID := range idChan {
-				logger.Debugf("[Meta Worker %d] Fetching metadata for: %s", workerID, seriesID)
+				// Check cache first unless refresh is requested
+				cachePath := getMetadataCachePath(options.Output, seriesID)
+				
+				if !options.RefreshMetadata {
+					// Try to load from cache
+					if cachedInfo, err := loadMetadataFromCache(cachePath); err == nil {
+						logger.Debugf("[Meta Worker %d] Loaded metadata from cache for: %s", workerID, seriesID)
+						mu.Lock()
+						results = append(results, cachedInfo)
+						mu.Unlock()
+						metaStats.updateProgress("cached", seriesID)
+						continue
+					}
+					// Cache miss or error, fetch from API
+					logger.Debugf("[Meta Worker %d] Cache miss, fetching metadata for: %s", workerID, seriesID)
+				} else {
+					logger.Debugf("[Meta Worker %d] Force refresh, fetching metadata for: %s", workerID, seriesID)
+				}
 				
 				url_, err := makeURL(MetaUrl, map[string]interface{}{"SeriesInstanceUID": seriesID})
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to make URL: %v", workerID, err)
+					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
 				
 				req, err := http.NewRequest("GET", url_, nil)
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to create request: %v", workerID, err)
+					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
 				
@@ -88,6 +242,7 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 				accessToken, err := authToken.GetAccessToken()
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to get access token: %v", workerID, err)
+					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
 				req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
@@ -100,6 +255,7 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 				resp, err := doRequest(httpClient, req)
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to do request: %v", workerID, err)
+					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
 				
@@ -107,6 +263,7 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 				_ = resp.Body.Close()
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to read response data: %v", workerID, err)
+					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
 				
@@ -115,13 +272,26 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to parse response data: %v", workerID, err)
 					logger.Debugf("%s", content)
+					metaStats.updateProgress("failed", seriesID)
 					continue
+				}
+				
+				// Save to cache - usually one file per series
+				for _, file := range files {
+					if file.SeriesUID != "" {
+						if err := saveMetadataToCache(file, getMetadataCachePath(options.Output, file.SeriesUID)); err != nil {
+							logger.Warnf("[Meta Worker %d] Failed to cache metadata for %s: %v", workerID, file.SeriesUID, err)
+						}
+					}
 				}
 				
 				// Thread-safe append to results
 				mu.Lock()
 				results = append(results, files...)
 				mu.Unlock()
+				
+				// Mark as successfully fetched
+				metaStats.updateProgress("fetched", seriesID)
 			}
 		}(i + 1)
 	}
@@ -129,7 +299,7 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token) []*FileI
 	// Wait for all workers to finish
 	wg.Wait()
 	
-	logger.Infof("Successfully fetched metadata for %d files", len(results))
+	fmt.Printf("Successfully fetched metadata for %d files\n", len(results))
 	return results
 }
 
@@ -157,7 +327,7 @@ type FileInfo struct {
 
 // GetOutput construct the output directory (thread-safe)
 func (info *FileInfo) getOutput(output string) string {
-	outputDir := filepath.Join(output, info.SubjectID, info.StudyDate)
+	outputDir := filepath.Join(output, info.SubjectID, info.StudyUID)
 
 	// Check if directory exists without lock first
 	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
@@ -179,7 +349,7 @@ func (info *FileInfo) getOutput(output string) string {
 }
 
 func (info *FileInfo) MetaFile(output string) string {
-	return filepath.Join(info.getOutput(output), fmt.Sprintf("%s.json", info.SeriesUID))
+	return getMetadataCachePath(output, info.SeriesUID)
 }
 
 func (info *FileInfo) DcimFiles(output string) string {
@@ -615,40 +785,18 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 		}
 	}()
 
-	// Create progress bar
-	var totalSize int64 = resp.ContentLength
-	
-	// Handle Content-Length edge cases
-	if totalSize < 0 {
-		logger.Warnf("Server did not provide Content-Length for %s", info.SeriesUID)
-		// Use FileSize from manifest if available
-		if fSize, err := strconv.ParseInt(info.FileSize, 10, 64); err == nil && fSize > 0 {
-			totalSize = fSize
-			logger.Debugf("Using manifest size %d for %s", totalSize, info.SeriesUID)
-		} else {
-			// Unknown size - use a large default for progress bar
-			totalSize = 1024 * 1024 * 1024 // 1GB default
-			logger.Warnf("Unknown file size for %s, using default progress bar", info.SeriesUID)
-		}
-	} else if info.FileSize != "" {
-		// Verify Content-Length matches manifest
-		if fSize, err := strconv.ParseInt(info.FileSize, 10, 64); err == nil && fSize != totalSize {
-			logger.Warnf("Size mismatch for %s: manifest=%d, Content-Length=%d", 
-				info.SeriesUID, fSize, totalSize)
-			// Use the larger value
-			if fSize > totalSize {
-				totalSize = fSize
-			}
-		}
+	// Log download start
+	if resp.ContentLength > 0 {
+		logger.Debugf("Downloading %s (size: %d bytes)", info.SeriesUID, resp.ContentLength)
+	} else {
+		logger.Debugf("Downloading %s (size: unknown)", info.SeriesUID)
 	}
-	
-	bar := bytesBar(totalSize, info.SeriesUID)
 	
 	// Buffer the response body for better handling of chunked transfers
 	bufferedReader := bufio.NewReaderSize(resp.Body, 64*1024) // 64KB buffer
 	
-	// Download with progress
-	written, err := io.Copy(io.MultiWriter(f, bar), bufferedReader)
+	// Download without progress bar
+	written, err := io.Copy(f, bufferedReader)
 	if err != nil {
 		// Log detailed error information
 		logger.Errorf("Download error for %s: %v (written=%d bytes)", info.SeriesUID, err, written)
@@ -667,7 +815,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 	if info.FileSize != "" {
 		expectedSize, _ := strconv.ParseInt(info.FileSize, 10, 64)
 		compressionRatio := float64(written) / float64(expectedSize) * 100
-		logger.Infof("Downloaded %s: %d bytes (%.1f%% of uncompressed size %d)", 
+		logger.Debugf("Downloaded %s: %d bytes (%.1f%% of uncompressed size %d)", 
 			info.SeriesUID, written, compressionRatio, expectedSize)
 	}
 	
@@ -692,7 +840,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 			return fmt.Errorf("failed to move ZIP file: %v", err)
 		}
 		
-		logger.Infof("Successfully saved %s as %s", info.SeriesUID, finalPath)
+		logger.Debugf("Successfully saved %s as %s", info.SeriesUID, finalPath)
 		return nil
 	} else {
 		// Decompression mode: extract and verify
@@ -704,9 +852,9 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 			expectedSize, _ = strconv.ParseInt(info.FileSize, 10, 64)
 		}
 		
-		// Parse MD5 hashes if MD5 validation is enabled
+		// Parse MD5 hashes if MD5 validation is enabled (default)
 		var md5Map map[string]string
-		if options.MD5 {
+		if !options.NoMD5 {
 			md5Map, err = parseMD5HashesCSV(tempZipPath)
 			if err != nil {
 				logger.Warnf("Failed to parse MD5 hashes: %v", err)
@@ -754,7 +902,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 			logger.Warnf("Failed to remove temporary ZIP file %s: %v", tempZipPath, err)
 		}
 		
-		logger.Infof("Successfully extracted %s to %s", info.SeriesUID, finalPath)
+		logger.Debugf("Successfully extracted %s to %s", info.SeriesUID, finalPath)
 		return nil
 	}
 }

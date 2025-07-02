@@ -60,7 +60,7 @@ mkdir -p "$test1_dir"
 # Test with invalid proxy (should fail gracefully)
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test1_dir" \
+    -o "$test1_dir" \
     -p 1 \
     --proxy "http://invalid.proxy:8080" \
     --max-retries 1 \
@@ -80,7 +80,7 @@ mkdir -p "$test2_dir"
 # Test with custom API (should fail with invalid URL)
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test2_dir" \
+    -o "$test2_dir" \
     -p 1 \
     --token-url "https://invalid.api.example.com/token" \
     --meta-url "https://invalid.api.example.com/meta" \
@@ -102,7 +102,7 @@ mkdir -p "$test3_dir"
 # First download files with MD5 validation enabled
 if ! "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test3_dir" \
+    -o "$test3_dir" \
     -p 1 \
     --md5 \
     --debug > "$test3_dir/download.log" 2>&1; then
@@ -130,7 +130,7 @@ test3b_dir="$TEST_OUTPUT/test3b"
 mkdir -p "$test3b_dir"
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test3b_dir" \
+    -o "$test3b_dir" \
     -p 1 \
     --no-decompress \
     --debug > "$test3b_dir/download.log" 2>&1
@@ -153,7 +153,7 @@ mkdir -p "$test4_dir"
 # The tool should automatically retry on size mismatch errors
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test4_dir" \
+    -o "$test4_dir" \
     -p 1 \
     --max-retries 3 \
     --debug 2>&1 | tee "$test4_dir/retry.log"; then
@@ -177,7 +177,7 @@ mkdir -p "$test5_dir"
 # Start download in background
 "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test5_dir" \
+    -o "$test5_dir" \
     -p 3 \
     --debug > "$test5_dir/output.log" 2>&1 &
 PID=$!
@@ -214,7 +214,7 @@ done
 # Note: time command can fail if tool fails, so we capture exit code
 if /usr/bin/time -v "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$large_manifest" \
-    -s "$test6_dir" \
+    -o "$test6_dir" \
     -p 5 \
     --meta \
     --debug 2>&1 | tee "$test6_dir/memory.log"; then
@@ -246,7 +246,7 @@ mkdir -p "$test7_dir"
 # Run with many workers to potentially trigger rate limiting
 if "$NBIA_TOOL" -u "$USERNAME" --passwd "$PASSWORD" \
     -i "$MANIFEST" \
-    -s "$test7_dir" \
+    -o "$test7_dir" \
     -p 20 \
     --max-connections 50 \
     --debug 2>&1 | tee "$test7_dir/ratelimit.log"; then
