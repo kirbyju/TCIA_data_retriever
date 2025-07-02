@@ -38,12 +38,12 @@
 ### 1. Install the tool
 ```bash
 # Download latest release (recommended)
-wget https://github.com/ygidtu/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-linux-amd64
+wget https://github.com/GrigoryEvko/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-linux-amd64
 chmod +x nbia-data-retriever-cli-linux-amd64
 mv nbia-data-retriever-cli-linux-amd64 nbia-data-retriever-cli
 
 # Or build from source
-git clone https://github.com/ygidtu/NBIA_data_retriever_CLI.git
+git clone https://github.com/GrigoryEvko/NBIA_data_retriever_CLI.git
 cd NBIA_data_retriever_CLI
 go build -o nbia-data-retriever-cli .
 ```
@@ -88,20 +88,20 @@ Average rate: 12.3 files/second
 ### Option 1: Download Pre-built Binary
 ```bash
 # Linux AMD64
-wget https://github.com/ygidtu/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-linux-amd64
+wget https://github.com/GrigoryEvko/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-linux-amd64
 
 # macOS AMD64
-wget https://github.com/ygidtu/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-darwin-amd64
+wget https://github.com/GrigoryEvko/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-darwin-amd64
 
 # Windows AMD64
-wget https://github.com/ygidtu/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-windows-amd64.exe
+wget https://github.com/GrigoryEvko/NBIA_data_retriever_CLI/releases/latest/download/nbia-data-retriever-cli-windows-amd64.exe
 
 chmod +x nbia-data-retriever-cli-*
 ```
 
 ### Option 2: Build from Source
 ```bash
-git clone https://github.com/ygidtu/NBIA_data_retriever_CLI.git
+git clone https://github.com/GrigoryEvko/NBIA_data_retriever_CLI.git
 cd NBIA_data_retriever_CLI
 go mod tidy
 go build -o nbia-data-retriever-cli .
@@ -113,7 +113,7 @@ python build.py --platform linux --arch amd64
 ### Option 3: Docker
 ```bash
 # Build image
-git clone https://github.com/ygidtu/NBIA_data_retriever_CLI.git
+git clone https://github.com/GrigoryEvko/NBIA_data_retriever_CLI.git
 cd NBIA_data_retriever_CLI
 docker build -t nbia .
 
@@ -611,4 +611,4 @@ This project maintains the same license as the original NBIA Data Retriever.
 
 ---
 
-For issues, feature requests, or contributions, please visit: https://github.com/ygidtu/NBIA_data_retriever_CLI
+For issues, feature requests, or contributions, please visit: https://github.com/GrigoryEvko/NBIA_data_retriever_CLI

@@ -1,4 +1,4 @@
-module github.com/ygidtu/NBIA_data_retriever_CLI
+module github.com/GrigoryEvko/NBIA_data_retriever_CLI
 
 go 1.24.4
 
