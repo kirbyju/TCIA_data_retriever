@@ -16,41 +16,43 @@ var (
 
 // Options command line parameters
 type Options struct {
-	Input      string
-	Output     string
-	Proxy      string
-	Concurrent int
-	Meta       bool
-	Username   string
-	Password   string
-	Version    bool
-	Debug      bool
-	Help       bool
-	MetaUrl    string
-	TokenUrl   string
-	ImageUrl   string
-	SaveLog    bool
-	Prompt     bool
-	Force      bool
-	SkipExisting bool
-	MaxRetries int
-	RetryDelay time.Duration
+	Input           string
+	Output          string
+	Proxy           string
+	Concurrent      int
+	Meta            bool
+	Username        string
+	Password        string
+	Version         bool
+	Debug           bool
+	Help            bool
+	MetaUrl         string
+	TokenUrl        string
+	ImageUrl        string
+	SaveLog         bool
+	Prompt          bool
+	Force           bool
+	SkipExisting    bool
+	MaxRetries      int
+	RetryDelay      time.Duration
 	MaxConnsPerHost int
-	ServerFriendly bool
-	RequestDelay time.Duration
-	NoMD5      bool
-	NoDecompress bool
+	ServerFriendly  bool
+	RequestDelay    time.Duration
+	NoMD5           bool
+	NoDecompress    bool
 	RefreshMetadata bool
+	MetadataWorkers int
 
 	opt *getoptions.GetOpt
 }
 
 func InitOptions() *Options {
 	opt := &Options{
-		opt: getoptions.New(),
-		RetryDelay: 10 * time.Second, // Server-friendly: 10 second initial retry delay
-		MaxConnsPerHost: 8, // Balanced setting
-		RequestDelay: 500 * time.Millisecond, // Server-friendly: delay between requests
+		opt:             getoptions.New(),
+		RetryDelay:      10 * time.Second,       // Server-friendly: 10 second initial retry delay
+		MaxConnsPerHost: 8,                      // Balanced setting
+		RequestDelay:    500 * time.Millisecond, // Server-friendly: delay between requests
+		MetadataWorkers: 20,                     // Default metadata workers
 	}
 
 	setLogger(false, "")
@@ -101,6 +103,8 @@ func InitOptions() *Options {
 		opt.opt.Description("keep downloaded files as ZIP archives (skip extraction)"))
 	opt.opt.BoolVar(&opt.RefreshMetadata, "refresh-metadata", false,
 		opt.opt.Description("force refresh all metadata from server (ignore cache)"))
+	opt.opt.IntVar(&opt.MetadataWorkers, "metadata-workers", 20,
+		opt.opt.Description("number of parallel metadata fetch workers"))
 
 	_, err := opt.opt.Parse(os.Args[1:])
 	if err != nil {
@@ -113,6 +117,7 @@ func InitOptions() *Options {
 		opt.MaxConnsPerHost = 2
 		opt.RetryDelay = 30 * time.Second
 		opt.RequestDelay = 2 * time.Second
+		opt.MetadataWorkers = 5  // Reduce metadata workers in server-friendly mode
 		logger.Info("Server-friendly mode: Using extra conservative settings")
 	}
 
@@ -124,7 +129,7 @@ func InitOptions() *Options {
 		fmt.Fprintf(os.Stderr, "%s", opt.opt.Help())
 		os.Exit(1)
 	}
-	
+
 	// Validate incompatible options
 	if !opt.NoMD5 && opt.NoDecompress {
 		logger.Fatal("MD5 validation (default) and --no-decompress are incompatible. Use --no-md5 with --no-decompress.")
@@ -139,7 +144,7 @@ func InitOptions() *Options {
 		MetaUrl = opt.MetaUrl
 		logger.Infof("Using custom meta url: %s", MetaUrl)
 	}
-	
+
 	// Set ImageUrl based on MD5 flag if not manually specified
 	if opt.ImageUrl != ImageUrl && opt.ImageUrl != "" {
 		// User specified a custom URL

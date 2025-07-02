@@ -26,14 +26,14 @@ var (
 
 // DownloadStats tracks download statistics
 type DownloadStats struct {
-	Total           int32
-	Downloaded      int32
-	Skipped         int32
-	Failed          int32
-	StartTime       time.Time
-	LastUpdate      time.Time
-	LastPercentage  int
-	mu              sync.Mutex
+	Total          int32
+	Downloaded     int32
+	Skipped        int32
+	Failed         int32
+	StartTime      time.Time
+	LastUpdate     time.Time
+	LastPercentage int
+	mu             sync.Mutex
 }
 
 // WorkerContext contains all dependencies for workers
@@ -62,19 +62,19 @@ func setupCloseHandler() {
 func updateProgress(stats *DownloadStats, currentSeriesID string, debugMode bool) {
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// Update at most once per 200ms for smooth updates
 	if now.Sub(stats.LastUpdate) < 200*time.Millisecond {
 		return
 	}
 	stats.LastUpdate = now
-	
+
 	// Calculate progress
 	processed := atomic.LoadInt32(&stats.Downloaded) + atomic.LoadInt32(&stats.Skipped) + atomic.LoadInt32(&stats.Failed)
 	percentage := float64(processed) / float64(stats.Total) * 100
-	
+
 	// Calculate ETA based on download rate only
 	elapsed := time.Since(stats.StartTime)
 	var eta string
@@ -87,13 +87,13 @@ func updateProgress(stats *DownloadStats, currentSeriesID string, debugMode bool
 			eta = fmt.Sprintf(" | ETA: %s", etaDuration.Round(time.Second))
 		}
 	}
-	
+
 	// Truncate series ID for display
 	displayID := currentSeriesID
 	if len(displayID) > 30 {
 		displayID = displayID[:30] + "..."
 	}
-	
+
 	// Clear line and print progress
 	fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d] %.1f%% | Downloaded: %d | Skipped: %d | Failed: %d%s | Current: %s",
 		processed, stats.Total, percentage,
@@ -131,7 +131,7 @@ func main() {
 		if err := createMetadataDir(options.Output); err != nil {
 			logger.Fatalf("Failed to create metadata directory: %v", err)
 		}
-		
+
 		var wg sync.WaitGroup
 		files := decodeTCIA(options.Input, client, token, options)
 		stats := &DownloadStats{Total: int32(len(files))}
@@ -143,10 +143,10 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "\nDownloading %d series with %d workers...\n\n", len(files), options.Concurrent)
 		}
-		
+
 		wg.Add(options.Concurrent)
 		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
-		
+
 		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
 			ctx := &WorkerContext{
@@ -163,7 +163,7 @@ func main() {
 					// Update progress display
 					updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
-					
+
 					if ctx.Options.Meta {
 						// Only download metadata
 						if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
@@ -181,7 +181,7 @@ func main() {
 							updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
 							continue
 						}
-						
+
 						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
 							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
@@ -209,15 +209,15 @@ func main() {
 		}
 		close(inputChan)
 		wg.Wait()
-		
+
 		// Final progress update
 		updateProgress(stats, "Complete", options.Debug)
-		
+
 		// Clear progress line in non-debug mode
 		if !options.Debug {
 			fmt.Fprintf(os.Stderr, "\n")
 		}
-		
+
 		elapsed := time.Since(stats.StartTime)
 		fmt.Println("\n=== Download Summary ===")
 		fmt.Printf("Total files: %d\n", stats.Total)
@@ -225,12 +225,12 @@ func main() {
 		fmt.Printf("Skipped: %d\n", stats.Skipped)
 		fmt.Printf("Failed: %d\n", stats.Failed)
 		fmt.Printf("Total time: %s\n", elapsed.Round(time.Second))
-		
+
 		if stats.Total > 0 {
-			rate := float64(stats.Downloaded + stats.Skipped) / elapsed.Seconds()
+			rate := float64(stats.Downloaded+stats.Skipped) / elapsed.Seconds()
 			fmt.Printf("Average rate: %.1f files/second\n", rate)
 		}
-		
+
 		if stats.Failed > 0 {
 			logger.Warnf("Some downloads failed. Check the logs above for details.")
 		}

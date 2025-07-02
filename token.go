@@ -28,7 +28,7 @@ type Token struct {
 	RefreshToken     string    `json:"refresh_token"`
 	TokenType        string    `json:"token_type"`
 	ExpiredTime      time.Time `json:"expires_time"`
-	
+
 	// Thread safety
 	mu       sync.RWMutex
 	username string
@@ -45,22 +45,22 @@ func (token *Token) GetAccessToken() (string, error) {
 		return accessToken, nil
 	}
 	token.mu.RUnlock()
-	
+
 	// Token expired, refresh it
 	token.mu.Lock()
 	defer token.mu.Unlock()
-	
+
 	// Double-check after acquiring write lock
 	if time.Now().Before(token.ExpiredTime) {
 		return token.AccessToken, nil
 	}
-	
+
 	logger.Infof("Token expired, refreshing...")
 	newToken, err := createNewToken(token.username, token.password, token.path)
 	if err != nil {
 		return "", fmt.Errorf("failed to refresh token: %v", err)
 	}
-	
+
 	// Copy new token data
 	token.AccessToken = newToken.AccessToken
 	token.SessionState = newToken.SessionState
@@ -72,12 +72,12 @@ func (token *Token) GetAccessToken() (string, error) {
 	token.RefreshToken = newToken.RefreshToken
 	token.TokenType = newToken.TokenType
 	token.ExpiredTime = newToken.ExpiredTime
-	
+
 	// Save updated token
 	if err := token.dumpInternal(); err != nil {
 		logger.Warnf("Failed to save refreshed token: %v", err)
 	}
-	
+
 	return token.AccessToken, nil
 }
 
@@ -105,7 +105,7 @@ func NewToken(username, passwd, path string) (*Token, error) {
 		password: passwd,
 		path:     path,
 	}
-	
+
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		logger.Infof("restore token from %v", path)
 		err = token.Load(path)
@@ -128,13 +128,13 @@ func NewToken(username, passwd, path string) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Copy token data and set credentials
 	*token = *newToken
 	token.username = username
 	token.password = passwd
 	token.path = path
-	
+
 	return token, nil
 }
 
@@ -175,14 +175,14 @@ func createNewToken(username, passwd, path string) (*Token, error) {
 	}
 
 	token.ExpiredTime = time.Now().Local().Add(time.Second * time.Duration(token.ExpiresIn))
-	
+
 	// Save token
 	if path != "" {
 		if err := token.Dump(path); err != nil {
 			logger.Warnf("Failed to save token: %v", err)
 		}
 	}
-	
+
 	return token, nil
 }
 
@@ -198,16 +198,16 @@ func (token *Token) dumpInternal() error {
 	if token.path == "" {
 		return nil
 	}
-	
+
 	logger.Debugf("saving token to %s", token.path)
-	
+
 	// Create temp file first
 	tempPath := token.path + ".tmp"
 	f, err := os.OpenFile(tempPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open token json: %v", err)
 	}
-	
+
 	// Create a copy without internal fields
 	tokenCopy := struct {
 		AccessToken      string    `json:"access_token"`
@@ -239,7 +239,7 @@ func (token *Token) dumpInternal() error {
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to marshal token: %v", err)
 	}
-	
+
 	_, err = f.Write(content)
 	if err != nil {
 		f.Close()
@@ -251,13 +251,13 @@ func (token *Token) dumpInternal() error {
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to close token file: %v", err)
 	}
-	
+
 	// Atomic rename
 	if err := os.Rename(tempPath, token.path); err != nil {
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to rename token file: %v", err)
 	}
-	
+
 	return nil
 }
 
