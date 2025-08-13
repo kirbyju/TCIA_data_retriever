@@ -1,0 +1,35 @@
+.terminal-output {
+  background: #23272e;
+  color: #d1d5db;
+  font-family: 'Fira Mono', 'Consolas', 'Menlo', monospace;
+  padding: 16px;
+  border-radius: 6px;
+  min-height: 120px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 15px;
+  margin-top: 24px;
+  white-space: pre-wrap;
+}
+.align-row {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 18px;
+}
+
+.button-label-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.path-label {
+  font-size: 14px;
+  color: #555;
+  word-break: break-all;
+  max-width: 350px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

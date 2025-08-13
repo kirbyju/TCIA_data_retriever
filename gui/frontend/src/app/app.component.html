@@ -1,0 +1,19 @@
+
+
+<div class="main-card">
+  <h2>NBIA Data Retriever</h2>
+  <div class="row align-row">
+    <div class="button-label-group">
+      <button class="action-btn" (click)="onSelectInputFile()">Select Input TCIA File</button>
+      <span class="path-label">{{ inputFilePath }}</span>
+    </div>
+  </div>
+  <div class="row align-row">
+    <div class="button-label-group">
+      <button class="action-btn" (click)="onSelectOutputDirectory()">Select Output Directory</button>
+      <span class="path-label">{{ outputDirPath }}</span>
+    </div>
+  </div>
+  <button class="fetch-btn" (click)="onFetchFiles()">Fetch Files</button>
+  <pre class="terminal-output">{{ status }}</pre>
+</div>
