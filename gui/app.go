@@ -39,10 +39,17 @@ func (b *App) OpenOutputDirectoryDialog() (string, error) {
 	return result, nil
 }
 
-// RunCLIFetch runs the CLI tool with the given manifest and output directory
-func (a *App) RunCLIFetch(manifestPath string, outputDir string) (string, error) {
+// RunCLIFetch runs the CLI tool with the given manifest and output directory and advanced options
+func (b *App) RunCLIFetch(manifestPath string, outputDir string, maxConnections int, maxRetries int, simultaneousDownloads int, skipExisting bool) (string, error) {
 	cliPath := "../nbia-data-retriever-cli"
-	args := []string{"-i", manifestPath, "--output", outputDir}
+	args := []string{"-i", manifestPath, "--output", outputDir,
+		"--max-connections", fmt.Sprintf("%d", maxConnections),
+		"--max-retries", fmt.Sprintf("%d", maxRetries),
+		"--processes", fmt.Sprintf("%d", simultaneousDownloads),
+	}
+	if skipExisting {
+		args = append(args, "--skip-existing")
+	}
 
 	cmd := exec.Command(cliPath, args...)
 	output, err := cmd.CombinedOutput()

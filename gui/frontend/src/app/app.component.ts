@@ -1,6 +1,5 @@
 import { Component } from '@angular/core';
-import { FetchFiles, OpenInputFileDialog, OpenOutputDirectoryDialog } from '../../wailsjs/go/main/App';
-import { RunCLIFetch } from '../../wailsjs/go/main/App';
+import { FetchFiles, OpenInputFileDialog, OpenOutputDirectoryDialog, RunCLIFetch } from '../../wailsjs/go/main/App';
 
 
 @Component({
@@ -12,6 +11,13 @@ export class AppComponent {
   status = 'Ready';
   inputFilePath = '';
   outputDirPath = '';
+
+  // Advanced options / UI state
+  showAdvanced = false;
+  maxConnections = 8;
+  maxRetries = 3;
+  simultaneousDownloads = 2;
+  skipExisting = true;
 
   onSelectOutputDirectory() {
     OpenOutputDirectoryDialog().then((dirPath: string) => {
@@ -28,7 +34,31 @@ export class AppComponent {
       this.status = "Please select both an input TCIA file and an output directory.";
       return;
     }
-    RunCLIFetch(this.inputFilePath, this.outputDirPath)
+
+    // Reconstruct the exact CLI command for display (quote paths to handle spaces)
+    const cliPath = '../nbia-data-retriever-cli';
+    const parts: string[] = [];
+    parts.push(cliPath);
+    parts.push('-i');
+    parts.push(`"${this.inputFilePath}"`);
+    parts.push('--output');
+    parts.push(`"${this.outputDirPath}"`);
+    parts.push('--max-connections');
+    parts.push(String(this.maxConnections));
+    parts.push('--max-retries');
+    parts.push(String(this.maxRetries));
+    parts.push('--processes');
+    parts.push(String(this.simultaneousDownloads));
+    if (this.skipExisting) {
+      parts.push('--skip-existing');
+    }
+    const cmdStr = parts.join(' ');
+
+    // Show command immediately in the status window
+    this.status = 'Running: ' + cmdStr;
+
+    // Call backend to run the CLI
+    RunCLIFetch(this.inputFilePath, this.outputDirPath, this.maxConnections, this.maxRetries, this.simultaneousDownloads, this.skipExisting)
       .then((result: string) => {
         this.status = result;
       })

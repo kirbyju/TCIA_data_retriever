@@ -1,5 +1,3 @@
-
-
 <div class="main-card">
   <h2>NBIA Data Retriever</h2>
   <div class="row align-row">
@@ -14,6 +12,35 @@
       <span class="path-label">{{ outputDirPath }}</span>
     </div>
   </div>
+
+  <!-- Advanced Options Accordion -->
+  <div class="accordion">
+    <button class="accordion-toggle" (click)="showAdvanced = !showAdvanced" [attr.aria-expanded]="showAdvanced">
+      Advanced Options
+      <span class="accordion-icon" [class.open]="showAdvanced"></span>
+    </button>
+    <div class="accordion-content" *ngIf="showAdvanced">
+      <div class="advanced-option">
+        <label for="maxConnections">Max Connections:</label>
+        <input id="maxConnections" type="number" min="1" [(ngModel)]="maxConnections" />
+      </div>
+      <div class="advanced-option">
+        <label for="maxRetries">Max Retries:</label>
+        <input id="maxRetries" type="number" min="0" [(ngModel)]="maxRetries" />
+      </div>
+      <div class="advanced-option">
+        <label for="simultaneousDownloads">Simultaneous Downloads Allowed:</label>
+        <input id="simultaneousDownloads" type="number" min="1" [(ngModel)]="simultaneousDownloads" />
+      </div>
+      <div class="advanced-option">
+        <label>
+          <input type="checkbox" [(ngModel)]="skipExisting" />
+          Skip Existing
+        </label>
+      </div>
+    </div>
+  </div>
+
   <button class="fetch-btn" (click)="onFetchFiles()">Fetch Files</button>
   <pre class="terminal-output">{{ status }}</pre>
 </div>
