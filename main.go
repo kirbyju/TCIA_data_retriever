@@ -151,6 +151,20 @@ func main() {
 		if err != nil {
 			logger.Fatalf("Failed to decode input file: %v", err)
 		}
+
+		// If input is a spreadsheet, copy it to the metadata folder
+		ext := strings.ToLower(filepath.Ext(options.Input))
+		if ext == ".csv" || ext == ".tsv" || ext == ".xlsx" {
+			metaDir := filepath.Join(options.Output, "metadata")
+			if err := os.MkdirAll(metaDir, 0755); err != nil {
+				logger.Fatalf("Failed to create metadata directory: %v", err)
+			}
+			destPath := filepath.Join(metaDir, filepath.Base(options.Input))
+			if err := copyFile(options.Input, destPath); err != nil {
+				logger.Warnf("Failed to copy spreadsheet to metadata folder: %v", err)
+			}
+		}
+
 		stats := &DownloadStats{Total: int32(len(files))}
 
 		// Initialize progress tracking

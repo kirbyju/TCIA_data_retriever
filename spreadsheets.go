@@ -71,7 +71,12 @@ func decodesv(file *os.File, separator rune) ([]string, error) {
 
 // Decode decodes an XLSX file and returns the values from the "imageUrl" column
 func (d *XLSXDecoder) Decode(file *os.File) ([]string, error) {
-	xlFile, err := xlsx.OpenReaderAt(file, -1)
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("could not get file stats: %w", err)
+	}
+	size := stat.Size()
+	xlFile, err := xlsx.OpenReaderAt(file, size)
 	if err != nil {
 		return nil, err
 	}
