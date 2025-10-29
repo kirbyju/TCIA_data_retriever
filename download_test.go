@@ -16,13 +16,14 @@ func TestDownloadFromGen3(t *testing.T) {
 	// Create a mock Gen3 server
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v0/drs/dg.4DFC/510a380c-3a25-5214-9bfe-0a487f497e04" {
+		if r.Method == "POST" && r.URL.Path == "/ga4gh/drs/v1/objects/dg.4DFC/510a380c-3a25-5214-bfe-0a487f497e04/access" {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, `{"access_url": "%s/download/510a380c-3a25-5214-9bfe-0a487f497e04"}`, server.URL)
-		} else if r.URL.Path == "/download/510a380c-3a25-5214-9bfe-0a487f497e04" {
+			fmt.Fprintf(w, `{"url": "%s/download/510a380c-3a25-5214-bfe-0a487f497e04"}`, server.URL)
+		} else if r.Method == "GET" && r.URL.Path == "/download/510a380c-3a25-5214-bfe-0a487f497e04" {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "file content")
 		} else {
+			t.Logf("Unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -46,8 +47,8 @@ func TestDownloadFromGen3(t *testing.T) {
 
 	// Create a FileInfo object with a DRS URI
 	fileInfo := &FileInfo{
-		DRSURI:    fmt.Sprintf("drs://%s/dg.4DFC/510a380c-3a25-5214-9bfe-0a487f497e04", server.Listener.Addr().String()),
-		SeriesUID: "510a380c-3a25-5214-9bfe-0a487f497e04",
+		DRSURI:    fmt.Sprintf("drs://%s/dg.4DFC/510a380c-3a25-5214-bfe-0a487f497e04", server.Listener.Addr().String()),
+		SeriesUID: "510a380c-3a25-5214-bfe-0a487f497e04",
 	}
 
 	// Create an Options object

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/csv"
@@ -708,7 +709,7 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 		return fmt.Errorf("invalid DRS URI: %s", info.DRSURI)
 	}
 	commonsURL := parsedURI.Host
-	objectID := parsedURI.Path[1:] // Remove leading slash
+	objectID := strings.TrimPrefix(parsedURI.Path, "/")
 
 	// Get download URL from Gen3
 	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth)
@@ -723,12 +724,13 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 
 // getGen3DownloadURL retrieves the download URL from a Gen3 server
 func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
-	apiEndpoint := fmt.Sprintf("https://%s/api/v0/drs/%s", commonsURL, objectID)
+	apiEndpoint := fmt.Sprintf("https://%s/ga4gh/drs/v1/objects/%s/access", commonsURL, objectID)
 
-	req, err := http.NewRequest("GET", apiEndpoint, nil)
+	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBufferString("{}"))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	if authFile != "" {
 		// Read API key from file
@@ -754,9 +756,9 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 		return "", fmt.Errorf("failed to decode Gen3 API response: %v", err)
 	}
 
-	accessURL, ok := result["access_url"].(string)
+	accessURL, ok := result["url"].(string)
 	if !ok {
-		return "", fmt.Errorf("no 'access_url' found in Gen3 API response")
+		return "", fmt.Errorf("no 'url' found in Gen3 API response")
 	}
 
 	return accessURL, nil
