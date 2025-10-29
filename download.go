@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -324,6 +325,7 @@ type FileInfo struct {
 	SeriesNumber       string `json:"Series Number"`
 	MD5Hash            string `json:"MD5 Hash,omitempty"`
 	DownloadURL        string `json:"downloadUrl,omitempty"`
+	DRSURI             string `json:"drs_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -687,10 +689,77 @@ func isRetryableError(err error) bool {
 
 // doDownload is a dispatcher for different download types
 func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+	if info.DRSURI != "" {
+		return info.downloadFromGen3(output, httpClient, options)
+	}
 	if info.DownloadURL != "" {
 		return info.downloadDirect(output, httpClient, options)
 	}
 	return info.downloadFromTCIA(output, httpClient, authToken, options)
+}
+
+// downloadFromGen3 downloads a file from a Gen3 server
+func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, options *Options) error {
+	logger.Debugf("Downloading from Gen3 DRS URI: %s", info.DRSURI)
+
+	// Parse DRS URI
+	parsedURI, err := url.Parse(info.DRSURI)
+	if err != nil {
+		return fmt.Errorf("invalid DRS URI: %s", info.DRSURI)
+	}
+	commonsURL := parsedURI.Host
+	objectID := parsedURI.Path[1:] // Remove leading slash
+
+	// Get download URL from Gen3
+	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth)
+	if err != nil {
+		return fmt.Errorf("failed to get download URL from Gen3: %v", err)
+	}
+
+	// Download the file
+	info.DownloadURL = downloadURL
+	return info.downloadDirect(output, httpClient, options)
+}
+
+// getGen3DownloadURL retrieves the download URL from a Gen3 server
+func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
+	apiEndpoint := fmt.Sprintf("https://%s/api/v0/drs/%s", commonsURL, objectID)
+
+	req, err := http.NewRequest("GET", apiEndpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	if authFile != "" {
+		// Read API key from file
+		key, err := os.ReadFile(authFile)
+		if err != nil {
+			return "", fmt.Errorf("failed to read API key file: %v", err)
+		}
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(string(key))))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to make request to Gen3 API: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Gen3 API returned status %s", resp.Status)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode Gen3 API response: %v", err)
+	}
+
+	accessURL, ok := result["access_url"].(string)
+	if !ok {
+		return "", fmt.Errorf("no 'access_url' found in Gen3 API response")
+	}
+
+	return accessURL, nil
 }
 
 // downloadDirect downloads a file from a direct URL without decompression

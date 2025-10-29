@@ -12,7 +12,7 @@ import (
 
 // SpreadSheetDecoder is an interface for decoding spreadsheets
 type SpreadSheetDecoder interface {
-	Decode(file *os.File) ([]string, error)
+	Decode(file *os.File) ([][]string, error)
 }
 
 // CSVDecoder decodes CSV files
@@ -24,53 +24,29 @@ type TSVDecoder struct{}
 // XLSXDecoder decodes XLSX files
 type XLSXDecoder struct{}
 
-// Decode decodes a CSV file and returns the values from the "imageUrl" column
-func (d *CSVDecoder) Decode(file *os.File) ([]string, error) {
+// Decode decodes a CSV file and returns the values from the "imageUrl" or "drs_uri" column
+func (d *CSVDecoder) Decode(file *os.File) ([][]string, error) {
 	return decodesv(file, ',')
 }
 
-// Decode decodes a TSV file and returns the values from the "imageUrl" column
-func (d *TSVDecoder) Decode(file *os.File) ([]string, error) {
+// Decode decodes a TSV file and returns the values from the "imageUrl" or "drs_uri" column
+func (d *TSVDecoder) Decode(file *os.File) ([][]string, error) {
 	return decodesv(file, '\t')
 }
 
-// decodesv decodes a separated value file and returns the values from the "imageUrl" column
-func decodesv(file *os.File, separator rune) ([]string, error) {
+// decodesv decodes a separated value file and returns the values from the "imageUrl" or "drs_uri" column
+func decodesv(file *os.File, separator rune) ([][]string, error) {
 	reader := csv.NewReader(file)
 	reader.Comma = separator
 	records, err := reader.ReadAll()
 	if err != nil {
 		return nil, err
 	}
-
-	if len(records) == 0 {
-		return []string{}, nil
-	}
-
-	header := records[0]
-	imageURLIndex := -1
-	for i, col := range header {
-		if col == "imageUrl" {
-			imageURLIndex = i
-			break
-		}
-	}
-
-	if imageURLIndex == -1 {
-		return nil, fmt.Errorf("no 'imageUrl' column found in %s", file.Name())
-	}
-
-	var imageURLs []string
-	for _, record := range records[1:] {
-		if len(record) > imageURLIndex {
-			imageURLs = append(imageURLs, record[imageURLIndex])
-		}
-	}
-	return imageURLs, nil
+	return records, nil
 }
 
-// Decode decodes an XLSX file and returns the values from the "imageUrl" column
-func (d *XLSXDecoder) Decode(file *os.File) ([]string, error) {
+// Decode decodes an XLSX file and returns the values from the "imageUrl" or "drs_uri" column
+func (d *XLSXDecoder) Decode(file *os.File) ([][]string, error) {
 	stat, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("could not get file stats: %w", err)
@@ -81,37 +57,17 @@ func (d *XLSXDecoder) Decode(file *os.File) ([]string, error) {
 		return nil, err
 	}
 
-	var imageURLs []string
+	var records [][]string
 	for _, sheet := range xlFile.Sheets {
-		if len(sheet.Rows) == 0 {
-			continue
-		}
-
-		header := sheet.Rows[0]
-		imageURLIndex := -1
-		for i, cell := range header.Cells {
-			if cell.String() == "imageUrl" {
-				imageURLIndex = i
-				break
+		for _, row := range sheet.Rows {
+			var record []string
+			for _, cell := range row.Cells {
+				record = append(record, cell.String())
 			}
-		}
-
-		if imageURLIndex == -1 {
-			continue
-		}
-
-		for _, row := range sheet.Rows[1:] {
-			if len(row.Cells) > imageURLIndex {
-				imageURLs = append(imageURLs, row.Cells[imageURLIndex].String())
-			}
+			records = append(records, record)
 		}
 	}
-
-	if len(imageURLs) == 0 {
-		return nil, fmt.Errorf("no 'imageUrl' column found in any sheet of %s", file.Name())
-	}
-
-	return imageURLs, nil
+	return records, nil
 }
 
 // getSpreadsheetDecoder returns a decoder based on the file extension
@@ -142,17 +98,49 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 		return nil, err
 	}
 
-	imageURLs, err := decoder.Decode(file)
+	records, err := decoder.Decode(file)
 	if err != nil {
 		return nil, err
 	}
 
+	if len(records) == 0 {
+		return []*FileInfo{}, nil
+	}
+
+	header := records[0]
+	drsURIIndex := -1
+	imageURLIndex := -1
+	for i, col := range header {
+		if col == "drs_uri" {
+			drsURIIndex = i
+		} else if col == "imageUrl" {
+			imageURLIndex = i
+		}
+	}
+
+	if drsURIIndex == -1 && imageURLIndex == -1 {
+		return nil, fmt.Errorf("no 'drs_uri' or 'imageUrl' column found in %s", file.Name())
+	}
+
 	var fileInfos []*FileInfo
-	for _, url := range imageURLs {
-		fileInfos = append(fileInfos, &FileInfo{
-			DownloadURL: url,
-			SeriesUID:   filepath.Base(url),
-		})
+	for _, record := range records[1:] {
+		if drsURIIndex != -1 {
+			if len(record) > drsURIIndex {
+				uri := record[drsURIIndex]
+				fileInfos = append(fileInfos, &FileInfo{
+					DRSURI:    uri,
+					SeriesUID: filepath.Base(uri),
+				})
+			}
+		} else {
+			if len(record) > imageURLIndex {
+				url := record[imageURLIndex]
+				fileInfos = append(fileInfos, &FileInfo{
+					DownloadURL: url,
+					SeriesUID:   filepath.Base(url),
+				})
+			}
+		}
 	}
 
 	return fileInfos, nil
