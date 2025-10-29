@@ -43,6 +43,7 @@ type Options struct {
 	RefreshMetadata bool
 	MetadataWorkers int
 	Auth            string
+	ApiBaseUrl      string
 
 	opt *getoptions.GetOpt
 }
@@ -108,6 +109,8 @@ func InitOptions() *Options {
 		opt.opt.Description("number of parallel metadata fetch workers"))
 	opt.opt.StringVar(&opt.Auth, "auth", "",
 		opt.opt.Description("path to JSON API key file for Gen3 authentication"))
+	opt.opt.StringVar(&opt.ApiBaseUrl, "api-base-url", "",
+		opt.opt.Description("Gen3 DRS API endpoint (e.g., https://example.com/ga4gh/drs/v1/objects/{guid})"))
 
 	_, err := opt.opt.Parse(os.Args[1:])
 	if err != nil {

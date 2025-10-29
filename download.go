@@ -712,7 +712,8 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 	objectID := strings.TrimPrefix(parsedURI.Path, "/")
 
 	// Get download URL from Gen3
-	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth)
+	objectID = url.PathEscape(objectID)
+	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth, options.ApiBaseUrl)
 	if err != nil {
 		return fmt.Errorf("failed to get download URL from Gen3: %v", err)
 	}
@@ -723,8 +724,11 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 }
 
 // getGen3DownloadURL retrieves the download URL from a Gen3 server
-func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
-	apiEndpoint := fmt.Sprintf("https://%s/ga4gh/drs/v1/objects/%s/access", commonsURL, objectID)
+func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile, apiBaseUrl string) (string, error) {
+	if apiBaseUrl == "" {
+		return "", fmt.Errorf("Gen3 API base URL not provided")
+	}
+	apiEndpoint := strings.Replace(apiBaseUrl, "{guid}", objectID, 1)
 
 	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBufferString("{}"))
 	if err != nil {
