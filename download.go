@@ -326,6 +326,7 @@ type FileInfo struct {
 	MD5Hash            string `json:"MD5 Hash,omitempty"`
 	DownloadURL        string `json:"downloadUrl,omitempty"`
 	DRSURI             string `json:"drs_uri,omitempty"`
+	FileName           string `json:"file_name,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -777,7 +778,11 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 func (info *FileInfo) downloadDirect(output string, httpClient *http.Client) error {
 	logger.Debugf("Downloading direct from URL: %s", info.DownloadURL)
 
-	finalPath := filepath.Join(output, info.SeriesUID)
+	fileName := info.SeriesUID
+	if info.FileName != "" {
+		fileName = info.FileName
+	}
+	finalPath := filepath.Join(output, fileName)
 	tempPath := finalPath + ".tmp"
 
 	// Clean up any previous temporary files

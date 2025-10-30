@@ -110,12 +110,15 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 	header := records[0]
 	drsURIIndex := -1
 	imageURLIndex := -1
+	nameIndex := -1
 	for i, col := range header {
 		switch col {
 		case "drs_uri":
 			drsURIIndex = i
 		case "imageUrl":
 			imageURLIndex = i
+		case "name":
+			nameIndex = i
 		}
 	}
 
@@ -125,20 +128,33 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 
 	var fileInfos []*FileInfo
 	for _, record := range records[1:] {
+		var fileName string
+		if nameIndex != -1 && len(record) > nameIndex {
+			fileName = record[nameIndex]
+		}
+
 		if drsURIIndex != -1 {
 			if len(record) > drsURIIndex {
 				uri := record[drsURIIndex]
+				if fileName == "" {
+					fileName = filepath.Base(uri)
+				}
 				fileInfos = append(fileInfos, &FileInfo{
 					DRSURI:    uri,
 					SeriesUID: filepath.Base(uri),
+					FileName:  fileName,
 				})
 			}
 		} else {
 			if len(record) > imageURLIndex {
 				url := record[imageURLIndex]
+				if fileName == "" {
+					fileName = filepath.Base(url)
+				}
 				fileInfos = append(fileInfos, &FileInfo{
 					DownloadURL: url,
 					SeriesUID:   filepath.Base(url),
+					FileName:    fileName,
 				})
 			}
 		}
