@@ -3,7 +3,6 @@ package main
 import (
 	"archive/zip"
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/csv"
@@ -694,7 +693,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 		return info.downloadFromGen3(output, httpClient, options)
 	}
 	if info.DownloadURL != "" {
-		return info.downloadDirect(output, httpClient, options)
+		return info.downloadDirect(output, httpClient)
 	}
 	return info.downloadFromTCIA(output, httpClient, authToken, options)
 }
@@ -713,31 +712,31 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 
 	// Get download URL from Gen3
 	objectID = url.PathEscape(objectID)
-	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth, options.ApiBaseUrl)
+	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth)
 	if err != nil {
 		return fmt.Errorf("failed to get download URL from Gen3: %v", err)
 	}
 
 	// Download the file
 	info.DownloadURL = downloadURL
-	return info.downloadDirect(output, httpClient, options)
+	return info.downloadDirect(output, httpClient)
+}
+
+type AccessMethod struct {
+	AccessID string `json:"access_id"`
+	Type     string `json:"type"`
 }
 
 // getGen3DownloadURL retrieves the download URL from a Gen3 server
-func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile, apiBaseUrl string) (string, error) {
-	if apiBaseUrl == "" {
-		return "", fmt.Errorf("Gen3 API base URL not provided")
-	}
-	apiEndpoint := strings.Replace(apiBaseUrl, "{guid}", objectID, 1)
+func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
+	apiEndpoint := fmt.Sprintf("https://%s/user/data/download/%s", commonsURL, objectID)
 
-	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBufferString("{}"))
+	req, err := http.NewRequest("GET", apiEndpoint, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
 	if authFile != "" {
-		// Read API key from file
 		key, err := os.ReadFile(authFile)
 		if err != nil {
 			return "", fmt.Errorf("failed to read API key file: %v", err)
@@ -757,7 +756,13 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile, api
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode Gen3 API response: %v", err)
+		// It's possible the response is just the URL, not a JSON object.
+		// To handle this, we can try to read the response body as a string.
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("failed to decode and read Gen3 API response: %v and %v", err, readErr)
+		}
+		return string(bodyBytes), nil
 	}
 
 	accessURL, ok := result["url"].(string)
@@ -769,7 +774,7 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile, api
 }
 
 // downloadDirect downloads a file from a direct URL without decompression
-func (info *FileInfo) downloadDirect(output string, httpClient *http.Client, options *Options) error {
+func (info *FileInfo) downloadDirect(output string, httpClient *http.Client) error {
 	logger.Debugf("Downloading direct from URL: %s", info.DownloadURL)
 
 	finalPath := filepath.Join(output, info.SeriesUID)

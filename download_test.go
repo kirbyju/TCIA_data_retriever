@@ -16,14 +16,17 @@ func TestDownloadFromGen3(t *testing.T) {
 	// Create a mock Gen3 server
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expectedPath := "/ga4gh/drs/v1/objects/dg.4DFC%2F510a380c-3a25-5214-bfe-0a487f497e04/access"
-		if r.Method == "POST" && r.URL.RawPath == expectedPath {
+		downloadPath := "/download/510a380c-3a25-5214-bfe-0a487f497e04"
+		presignedURLPath := "/user/data/download/dg.4DFC%2F510a380c-3a25-5214-bfe-0a487f497e04"
+
+		switch {
+		case r.Method == "GET" && r.URL.RawPath == presignedURLPath:
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, `{"url": "%s/download/510a380c-3a25-5214-bfe-0a487f497e04"}`, server.URL)
-		} else if r.Method == "GET" && r.URL.Path == "/download/510a380c-3a25-5214-bfe-0a487f497e04" {
+			fmt.Fprintf(w, `{"url": "%s%s"}`, server.URL, downloadPath)
+		case r.Method == "GET" && r.URL.Path == downloadPath:
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "file content")
-		} else {
+		default:
 			t.Logf("Unexpected request: %s %s (RawPath: %s)", r.Method, r.URL.Path, r.URL.RawPath)
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -54,8 +57,7 @@ func TestDownloadFromGen3(t *testing.T) {
 
 	// Create an Options object
 	options := &Options{
-		Auth:       authFile.Name(),
-		ApiBaseUrl: fmt.Sprintf("%s/ga4gh/drs/v1/objects/{guid}/access", server.URL),
+		Auth: authFile.Name(),
 	}
 
 	// Create an HTTP client

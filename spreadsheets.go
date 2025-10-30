@@ -111,9 +111,10 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 	drsURIIndex := -1
 	imageURLIndex := -1
 	for i, col := range header {
-		if col == "drs_uri" {
+		switch col {
+		case "drs_uri":
 			drsURIIndex = i
-		} else if col == "imageUrl" {
+		case "imageUrl":
 			imageURLIndex = i
 		}
 	}

@@ -73,7 +73,7 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 }
 
 // updateProgress prints the current download progress
-func updateProgress(stats *DownloadStats, currentSeriesID string, debugMode bool) {
+func updateProgress(stats *DownloadStats, currentSeriesID string) {
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
 
@@ -192,7 +192,7 @@ func main() {
 				defer wg.Done()
 				for fileInfo := range input {
 					// Update progress display
-					updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
+					updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
 					// Skip metadata saving for spreadsheet inputs
@@ -212,13 +212,13 @@ func main() {
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
 						}
-						updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
+						updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					} else {
 						// Download images (and save metadata for TCIA inputs)
 						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false, ctx.Options.NoDecompress) {
 							logger.Debugf("[Worker %d] Skip existing %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
+							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 							continue
 						}
 
@@ -235,11 +235,11 @@ func main() {
 								}
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
-							updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
+							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						} else {
 							logger.Debugf("[Worker %d] Skip %s (already exists with correct size/checksum)", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID, ctx.Options.Debug)
+							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						}
 					}
 				}
@@ -253,7 +253,7 @@ func main() {
 		wg.Wait()
 
 		// Final progress update
-		updateProgress(stats, "Complete", options.Debug)
+		updateProgress(stats, "Complete")
 
 		// Clear progress line in non-debug mode
 		if !options.Debug {
