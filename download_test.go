@@ -21,6 +21,11 @@ func TestDownloadFromGen3(t *testing.T) {
 
 		switch {
 		case r.Method == "GET" && r.URL.RawPath == presignedURLPath:
+			if r.Header.Get("Authorization") != "Bearer test-api-key" {
+				t.Errorf("Incorrect Authorization header: got %q", r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, `{"url": "%s%s"}`, server.URL, downloadPath)
 		case r.Method == "GET" && r.URL.Path == downloadPath:
@@ -46,7 +51,7 @@ func TestDownloadFromGen3(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(authFile.Name())
-	authFile.WriteString("test-api-key")
+	authFile.WriteString(`{"api_key": "test-api-key"}`)
 	authFile.Close()
 
 	// Create a FileInfo object with a DRS URI
@@ -93,6 +98,11 @@ func TestDownloadFromGen3_NoFileName(t *testing.T) {
 
 		switch {
 		case r.Method == "GET" && r.URL.RawPath == presignedURLPath:
+			if r.Header.Get("Authorization") != "Bearer test-api-key" {
+				t.Errorf("Incorrect Authorization header: got %q", r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, `{"url": "%s%s"}`, server.URL, downloadPath)
 		case r.Method == "GET" && r.URL.Path == downloadPath:
@@ -118,7 +128,7 @@ func TestDownloadFromGen3_NoFileName(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(authFile.Name())
-	authFile.WriteString("test-api-key")
+	authFile.WriteString(`{"api_key": "test-api-key"}`)
 	authFile.Close()
 
 	// Create a FileInfo object with a DRS URI but no FileName

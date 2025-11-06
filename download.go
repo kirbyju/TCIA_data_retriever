@@ -738,11 +738,22 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 	}
 
 	if authFile != "" {
-		key, err := os.ReadFile(authFile)
+		keyData, err := os.ReadFile(authFile)
 		if err != nil {
 			return "", fmt.Errorf("failed to read API key file: %v", err)
 		}
-		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(string(key))))
+
+		var apiKey struct {
+			APIKey string `json:"api_key"`
+		}
+		if err := json.Unmarshal(keyData, &apiKey); err != nil {
+			return "", fmt.Errorf("failed to parse API key from JSON: %v", err)
+		}
+
+		if apiKey.APIKey == "" {
+			return "", fmt.Errorf("'api_key' not found in JSON key file")
+		}
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(apiKey.APIKey)))
 	}
 
 	resp, err := client.Do(req)
