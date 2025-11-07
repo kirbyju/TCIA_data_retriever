@@ -756,6 +756,14 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(apiKey.APIKey)))
 	}
 
+	// Log the request for debugging
+	logger.Warnf("Gen3 API Request URL: %s", req.URL.String())
+	for name, headers := range req.Header {
+		for _, h := range headers {
+			logger.Warnf("Gen3 API Request Header: %s: %s", name, h)
+		}
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to make request to Gen3 API: %v", err)
