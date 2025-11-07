@@ -757,10 +757,10 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 	}
 
 	// Log the request for debugging
-	logger.Debugf("Gen3 API Request URL: %s", req.URL.String())
+	logger.Warnf("Gen3 API Request URL: %s", req.URL.String())
 	for name, headers := range req.Header {
 		for _, h := range headers {
-			logger.Debugf("Gen3 API Request Header: %s: %s", name, h)
+			logger.Warnf("Gen3 API Request Header: %s: %s", name, h)
 		}
 	}
 
