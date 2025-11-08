@@ -162,3 +162,50 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 
 	return fileInfos, nil
 }
+
+var ErrSeriesUIDColumnNotFound = fmt.Errorf("no 'SeriesInstanceUID' column found")
+
+// getSeriesUIDsFromSpreadsheet extracts a list of SeriesInstanceUIDs from a spreadsheet
+func getSeriesUIDsFromSpreadsheet(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	decoder, err := getSpreadsheetDecoder(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	records, err := decoder.Decode(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(records) == 0 {
+		return []string{}, nil
+	}
+
+	header := records[0]
+	seriesInstanceUIDIndex := -1
+	for i, col := range header {
+		if col == "SeriesInstanceUID" {
+			seriesInstanceUIDIndex = i
+			break
+		}
+	}
+
+	if seriesInstanceUIDIndex == -1 {
+		return nil, ErrSeriesUIDColumnNotFound
+	}
+
+	var seriesUIDs []string
+	for _, record := range records[1:] {
+		if len(record) > seriesInstanceUIDIndex {
+			seriesUIDs = append(seriesUIDs, record[seriesInstanceUIDIndex])
+		}
+	}
+
+	return seriesUIDs, nil
+}

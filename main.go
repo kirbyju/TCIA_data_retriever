@@ -66,6 +66,17 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 	case ".tcia":
 		return decodeTCIA(filePath, client, token, options), nil
 	case ".csv", ".tsv", ".xlsx":
+		// Try to decode as a SeriesInstanceUID spreadsheet first
+		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
+		if err == nil {
+			// Success, handle like a TCIA manifest
+			return FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options), nil
+		} else if err != ErrSeriesUIDColumnNotFound {
+			// A real error occurred
+			return nil, fmt.Errorf("could not get series UIDs from spreadsheet: %w", err)
+		}
+
+		// Fallback to regular spreadsheet handling
 		return decodeSpreadsheet(filePath)
 	default:
 		return nil, fmt.Errorf("unsupported input file format: %s", ext)
