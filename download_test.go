@@ -51,7 +51,9 @@ func TestDownloadFromGen3(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(authFile.Name())
-	authFile.WriteString(`{"api_key": "test-api-key"}`)
+	if _, err := authFile.WriteString("{\"access_token\":\"test_token\"}"); err != nil {
+		t.Fatalf("Failed to write to auth file: %v", err)
+	}
 	authFile.Close()
 
 	// Create a FileInfo object with a DRS URI
@@ -128,7 +130,9 @@ func TestDownloadFromGen3_NoFileName(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	defer os.Remove(authFile.Name())
-	authFile.WriteString(`{"api_key": "test-api-key"}`)
+	if _, err := authFile.WriteString("{\"access_token\":\"test_token\"}"); err != nil {
+		t.Fatalf("Failed to write to auth file: %v", err)
+	}
 	authFile.Close()
 
 	// Create a FileInfo object with a DRS URI but no FileName
