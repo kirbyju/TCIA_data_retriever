@@ -123,7 +123,7 @@ func decodeSpreadsheet(filePath string) ([]*FileInfo, error) {
 	}
 
 	if drsURIIndex == -1 && imageURLIndex == -1 {
-		return nil, fmt.Errorf("no 'drs_uri' or 'imageUrl' column found in %s", file.Name())
+		return nil, fmt.Errorf("no 'drs_uri', 'imageUrl', 'SeriesInstanceUID', or 'Series UID' column found in %s", file.Name())
 	}
 
 	var fileInfos []*FileInfo
@@ -190,7 +190,7 @@ func getSeriesUIDsFromSpreadsheet(filePath string) ([]string, error) {
 	header := records[0]
 	seriesInstanceUIDIndex := -1
 	for i, col := range header {
-		if col == "SeriesInstanceUID" {
+		if col == "SeriesInstanceUID" || col == "Series UID" {
 			seriesInstanceUIDIndex = i
 			break
 		}

@@ -180,10 +180,17 @@ func main() {
 
 		// Initialize progress tracking
 		stats.StartTime = time.Now()
+
+		// Determine the item type for messaging
+		itemType := "series"
+		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "") {
+			itemType = "files"
+		}
+
 		if options.Debug {
-			logger.Infof("Starting download of %d series with %d workers", len(files), options.Concurrent)
+			logger.Infof("Starting download of %d %s with %d workers", len(files), itemType, options.Concurrent)
 		} else {
-			fmt.Fprintf(os.Stderr, "\nDownloading %d series with %d workers...\n\n", len(files), options.Concurrent)
+			fmt.Fprintf(os.Stderr, "\nDownloading %d %s with %d workers...\n\n", len(files), itemType, options.Concurrent)
 		}
 
 		wg.Add(options.Concurrent)

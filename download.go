@@ -247,11 +247,28 @@ func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, aut
 					continue
 				}
 
-				files := make([]*FileInfo, 0)
-				err = json.Unmarshal(content, &files)
+				if len(content) == 0 {
+					logger.Debugf("[Meta Worker %d] Empty metadata response for series %s", workerID, seriesID)
+					metaStats.updateProgress("fetched", seriesID)
+					continue
+				}
+
+				var files []*FileInfo
+				// The API sometimes returns a single object instead of an array for a single series.
+				// We need to handle both cases.
+				if content[0] == '[' {
+					err = json.Unmarshal(content, &files)
+				} else {
+					var file FileInfo
+					err = json.Unmarshal(content, &file)
+					if err == nil {
+						files = []*FileInfo{&file}
+					}
+				}
+
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to parse response data: %v", workerID, err)
-					logger.Debugf("%s", content)
+					logger.Debugf("%s", string(content))
 					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
