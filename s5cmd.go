@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -24,31 +25,68 @@ func decodeS5cmd(filePath string) ([]*FileInfo, error) {
 	var files []*FileInfo
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue // Skip empty lines and comments
+		}
+
 		parts := strings.Fields(line)
-		// s5cmd manifests can have 'cp' or other commands. We are interested in lines like:
-		// cp s3://bucket/key local/path
-		// or just the s3 uri
 		var s3uri string
 		if len(parts) >= 2 && parts[0] == "cp" {
 			s3uri = parts[1]
 		} else if len(parts) == 1 && strings.HasPrefix(parts[0], "s3://") {
 			s3uri = parts[0]
 		} else {
+			logger.Warnf("Skipping unrecognized line in s5cmd manifest: %s", line)
 			continue
 		}
 
-		files = append(files, &FileInfo{
-			DownloadURL: s3uri,
-			// Using the base of the S3 path as a temporary SeriesUID for progress tracking
-			SeriesUID: filepath.Base(s3uri),
-		})
+		// If the URI contains a wildcard, expand it
+		if strings.Contains(s3uri, "*") {
+			logger.Infof("Found wildcard in s5cmd manifest: %s. Expanding...", s3uri)
+			cmd := exec.Command("s5cmd",
+				"--no-sign-request",
+				"--endpoint-url", "https://s3.amazonaws.com",
+				"ls",
+				s3uri,
+			)
+			stdout, err := cmd.CombinedOutput()
+			if err != nil {
+				return nil, fmt.Errorf("s5cmd ls command failed for %s: %s\nOutput: %s", s3uri, err, string(stdout))
+			}
+
+			// Process the output of the ls command
+			lsScanner := bufio.NewScanner(strings.NewReader(string(stdout)))
+			for lsScanner.Scan() {
+				lsLine := strings.TrimSpace(lsScanner.Text())
+				lsParts := strings.Fields(lsLine)
+				if len(lsParts) > 0 {
+					// The last part of the `ls` output is the full S3 URI
+					expandedURI := lsParts[len(lsParts)-1]
+					if strings.HasPrefix(expandedURI, "s3://") {
+						files = append(files, &FileInfo{
+							DownloadURL: expandedURI,
+							SeriesUID:   filepath.Base(expandedURI), // Temporary UID for progress
+						})
+					}
+				}
+			}
+			if err := lsScanner.Err(); err != nil {
+				return nil, fmt.Errorf("error reading s5cmd ls output for %s: %w", s3uri, err)
+			}
+		} else {
+			// No wildcard, add the file directly
+			files = append(files, &FileInfo{
+				DownloadURL: s3uri,
+				SeriesUID:   filepath.Base(s3uri), // Temporary UID for progress
+			})
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading s5cmd manifest: %w", err)
 	}
 
-	logger.Infof("Found %d files to download from s5cmd manifest", len(files))
+	logger.Infof("Found %d total files to download from s5cmd manifest after expansion", len(files))
 	return files, nil
 }
