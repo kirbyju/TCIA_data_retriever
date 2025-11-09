@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -720,7 +721,13 @@ func isRetryableError(err error) bool {
 
 // doDownload is a dispatcher for different download types
 func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+	if strings.HasPrefix(info.DownloadURL, "s3://") {
+		return info.downloadFromS3(output, options)
+	}
 	if info.S5cmdManifestPath != "" {
+		// This case is now handled by decodeS5cmd which creates individual FileInfo objects.
+		// This logic path should ideally not be taken.
+		logger.Warnf("downloadS5cmdManifest called unexpectedly for %s", info.S5cmdManifestPath)
 		return info.downloadS5cmdManifest(output, options)
 	}
 	if info.DRSURI != "" {
@@ -730,6 +737,36 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 		return info.downloadDirect(output, httpClient)
 	}
 	return info.downloadFromTCIA(output, httpClient, authToken, options)
+}
+
+// downloadFromS3 downloads a file from S3 using the s5cmd command-line tool.
+func (info *FileInfo) downloadFromS3(output string, options *Options) error {
+	logger.Debugf("Downloading from S3: %s", info.DownloadURL)
+
+	// Construct the s5cmd command to download a single file
+	// s5cmd --no-sign-request --endpoint-url https://s3.amazonaws.com cp <s3-uri> .
+	cmd := exec.Command("s5cmd",
+		"--no-sign-request",
+		"--endpoint-url", "https://s3.amazonaws.com",
+		"cp",
+		info.DownloadURL,
+		".", // Download to the current directory (output)
+	)
+	cmd.Dir = output // Run the command in the output directory
+
+	// Execute the command
+	stdout, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("s5cmd command failed for %s: %s\nOutput: %s", info.DownloadURL, err, string(stdout))
+	}
+
+	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
+
+	// The downloaded file will be in the output directory with its original name.
+	// We will handle renaming and moving it later.
+	info.FileName = filepath.Base(info.DownloadURL) // Store the downloaded filename
+
+	return nil
 }
 
 // downloadFromGen3 downloads a file from a Gen3 server
