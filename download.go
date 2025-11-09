@@ -155,29 +155,8 @@ func saveMetadataToCache(info *FileInfo, cachePath string) error {
 	return os.Rename(tempFile, cachePath)
 }
 
-// decodeTCIA is used to decode the tcia file with parallel metadata fetching
-func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
-	logger.Debugf("decoding tcia file: %s", path)
-
-	f, err := os.Open(path)
-	if err != nil {
-		logger.Fatal(err)
-	}
-	defer f.Close()
-
-	// First, collect all series IDs
-	seriesIDs := make([]string, 0)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.ContainsAny(line, "=") {
-			seriesIDs = append(seriesIDs, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		logger.Errorf("error reading tcia file: %v", err)
-	}
-
+// FetchMetadataForSeriesUIDs fetches metadata for a list of series UIDs in parallel
+func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
 	fmt.Printf("Found %d series to fetch metadata for\n", len(seriesIDs))
 
 	// Initialize metadata stats
@@ -260,6 +239,14 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 					continue
 				}
 
+				// Check for authentication errors
+				if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+					logger.Errorf("[Meta Worker %d] Authentication failed for series %s (status: %s). Please check your credentials and ensure you have access to this restricted series.", workerID, seriesID, resp.Status)
+					_ = resp.Body.Close()
+					metaStats.updateProgress("failed", seriesID)
+					continue
+				}
+
 				content, err := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if err != nil {
@@ -268,11 +255,22 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 					continue
 				}
 
-				files := make([]*FileInfo, 0)
-				err = json.Unmarshal(content, &files)
+				var files []*FileInfo
+				// The API sometimes returns a single object instead of an array for a single series.
+				// We need to handle both cases.
+				if len(content) > 0 && content[0] == '[' {
+					err = json.Unmarshal(content, &files)
+				} else if len(content) > 0 {
+					var file FileInfo
+					err = json.Unmarshal(content, &file)
+					if err == nil {
+						files = []*FileInfo{&file}
+					}
+				}
+
 				if err != nil {
 					logger.Errorf("[Meta Worker %d] Failed to parse response data: %v", workerID, err)
-					logger.Debugf("%s", content)
+					logger.Debugf("%s", string(content))
 					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
@@ -302,6 +300,32 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 
 	fmt.Printf("Successfully fetched metadata for %d files\n", len(results))
 	return results
+}
+
+// decodeTCIA is used to decode the tcia file with parallel metadata fetching
+func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
+	logger.Debugf("decoding tcia file: %s", path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	defer f.Close()
+
+	// First, collect all series IDs
+	seriesIDs := make([]string, 0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.ContainsAny(line, "=") {
+			seriesIDs = append(seriesIDs, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		logger.Errorf("error reading tcia file: %v", err)
+	}
+
+	return FetchMetadataForSeriesUIDs(seriesIDs, httpClient, authToken, options)
 }
 
 type FileInfo struct {
