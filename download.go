@@ -350,6 +350,7 @@ type FileInfo struct {
 	MD5Hash            string `json:"MD5 Hash,omitempty"`
 	DownloadURL        string `json:"downloadUrl,omitempty"`
 	DRSURI             string `json:"drs_uri,omitempty"`
+	S5cmdURI           string `json:"s5cmd_uri,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
 }
 
@@ -392,6 +393,11 @@ func (info *FileInfo) NeedsDownload(output string, force bool, noDecompress bool
 	}
 
 	var targetPath string
+	if info.S5cmdURI != "" {
+		// s5cmd downloads files to the output directory, so we can't check for a specific file
+		// and we assume the file needs to be downloaded.
+		return true
+	}
 	if info.DownloadURL != "" {
 		targetPath = filepath.Join(output, info.SeriesUID)
 		_, err := os.Stat(targetPath)
@@ -714,6 +720,9 @@ func isRetryableError(err error) bool {
 
 // doDownload is a dispatcher for different download types
 func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+	if info.S5cmdURI != "" {
+		return info.downloadFromS5cmd(output, options)
+	}
 	if info.DRSURI != "" {
 		return info.downloadFromGen3(output, httpClient, options)
 	}

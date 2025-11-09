@@ -65,6 +65,8 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 	switch ext {
 	case ".tcia":
 		return decodeTCIA(filePath, client, token, options), nil
+	case ".s5cmd":
+		return decodeS5cmd(filePath)
 	case ".csv", ".tsv", ".xlsx":
 		// Try to decode as a SeriesInstanceUID spreadsheet first
 		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
@@ -183,7 +185,7 @@ func main() {
 
 		// Determine the item type for messaging
 		itemType := "series"
-		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "") {
+		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].S5cmdURI != "") {
 			itemType = "files"
 		}
 
@@ -214,7 +216,7 @@ func main() {
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
 					// Skip metadata saving for spreadsheet inputs
-					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != ""
+					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdURI != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
