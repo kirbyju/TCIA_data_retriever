@@ -239,6 +239,14 @@ func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, aut
 					continue
 				}
 
+				// Check for authentication errors
+				if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+					logger.Errorf("[Meta Worker %d] Authentication failed for series %s (status: %s). Please check your credentials and ensure you have access to this restricted series.", workerID, seriesID, resp.Status)
+					_ = resp.Body.Close()
+					metaStats.updateProgress("failed", seriesID)
+					continue
+				}
+
 				content, err := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if err != nil {
@@ -247,18 +255,12 @@ func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, aut
 					continue
 				}
 
-				if len(content) == 0 {
-					logger.Debugf("[Meta Worker %d] Empty metadata response for series %s", workerID, seriesID)
-					metaStats.updateProgress("fetched", seriesID)
-					continue
-				}
-
 				var files []*FileInfo
 				// The API sometimes returns a single object instead of an array for a single series.
 				// We need to handle both cases.
-				if content[0] == '[' {
+				if len(content) > 0 && content[0] == '[' {
 					err = json.Unmarshal(content, &files)
-				} else {
+				} else if len(content) > 0 {
 					var file FileInfo
 					err = json.Unmarshal(content, &file)
 					if err == nil {
