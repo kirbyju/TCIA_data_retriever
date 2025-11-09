@@ -111,7 +111,7 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 
 			ordinalAcq := acquisitionMap[file.AcquisitionNumber]
 			// Format is Acquisition-Instance, with instance number padded.
-			newName := fmt.Sprintf("%d-%04d.dcm", ordinalAcq, instanceCounter)
+			newName := fmt.Sprintf("%04d-%04d.dcm", ordinalAcq, instanceCounter)
 			newPath := filepath.Join(seriesDir, newName)
 
 			// Check if source and destination are the same file to handle case-insensitive filesystems.
