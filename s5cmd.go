@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -38,11 +40,46 @@ func decodeS5cmd(filePath string) ([]*FileInfo, error) {
 			continue
 		}
 
-		files = append(files, &FileInfo{
-			DownloadURL: s3uri,
-			// Using the base of the S3 path as a temporary SeriesUID for progress tracking
-			SeriesUID: filepath.Base(s3uri),
-		})
+		// Check if the URI contains a wildcard
+		if strings.Contains(s3uri, "*") {
+			logger.Infof("Expanding wildcard URI: %s", s3uri)
+			// Use s5cmd to list files
+			cmd := exec.Command("s5cmd", "--no-sign-request", "ls", s3uri)
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			err := cmd.Run()
+			if err != nil {
+				logger.Warnf("Failed to expand wildcard URI %s: %v", s3uri, err)
+				continue
+			}
+
+			// Process the output of s5cmd ls
+			lsScanner := bufio.NewScanner(&out)
+			for lsScanner.Scan() {
+				lsLine := lsScanner.Text()
+				// Find the s3:// prefix to correctly handle filenames with spaces
+				s3Index := strings.Index(lsLine, "s3://")
+				if s3Index == -1 {
+					continue
+				}
+				expandedURI := lsLine[s3Index:]
+				files = append(files, &FileInfo{
+					DownloadURL: expandedURI,
+					// Using the base of the S3 path as a temporary SeriesUID for progress tracking
+					SeriesUID: filepath.Base(expandedURI),
+				})
+			}
+			if err := lsScanner.Err(); err != nil {
+				logger.Warnf("Error reading s5cmd ls output for %s: %v", s3uri, err)
+			}
+		} else {
+			// No wildcard, add directly
+			files = append(files, &FileInfo{
+				DownloadURL: s3uri,
+				// Using the base of the S3 path as a temporary SeriesUID for progress tracking
+				SeriesUID: filepath.Base(s3uri),
+			})
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
