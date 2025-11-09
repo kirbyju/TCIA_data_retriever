@@ -34,7 +34,7 @@ func decodeS5cmd(filePath string) ([]*FileInfo, error) {
 		var s3uri string
 		if len(parts) >= 2 && parts[0] == "cp" {
 			s3uri = parts[1]
-		} else if len(parts) >= 1 && strings.HasPrefix(parts[0], "s3://") {
+		} else if len(parts) == 1 && strings.HasPrefix(parts[0], "s3://") {
 			s3uri = parts[0]
 		} else {
 			logger.Warnf("Skipping unrecognized line in s5cmd manifest: %s", line)
@@ -59,14 +59,16 @@ func decodeS5cmd(filePath string) ([]*FileInfo, error) {
 			lsScanner := bufio.NewScanner(strings.NewReader(string(stdout)))
 			for lsScanner.Scan() {
 				lsLine := strings.TrimSpace(lsScanner.Text())
-				// Find the start of the s3:// URI
-				s3Index := strings.Index(lsLine, "s3://")
-				if s3Index != -1 {
-					expandedURI := lsLine[s3Index:]
-					files = append(files, &FileInfo{
-						DownloadURL: expandedURI,
-						SeriesUID:   filepath.Base(expandedURI), // Temporary UID for progress
-					})
+				lsParts := strings.Fields(lsLine)
+				if len(lsParts) > 0 {
+					// The last part of the `ls` output is the full S3 URI
+					expandedURI := lsParts[len(lsParts)-1]
+					if strings.HasPrefix(expandedURI, "s3://") {
+						files = append(files, &FileInfo{
+							DownloadURL: expandedURI,
+							SeriesUID:   filepath.Base(expandedURI), // Temporary UID for progress
+						})
+					}
 				}
 			}
 			if err := lsScanner.Err(); err != nil {
