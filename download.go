@@ -760,8 +760,6 @@ func (info *FileInfo) downloadFromS3(output string, options *Options) error {
 		return fmt.Errorf("s5cmd command failed for %s: %s\nOutput: %s", info.DownloadURL, err, string(stdout))
 	}
 
-	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
-
 	// The downloaded file will be in the output directory with its original name.
 	// We will handle renaming and moving it later.
 	info.FileName = filepath.Base(info.DownloadURL) // Store the downloaded filename

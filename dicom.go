@@ -35,7 +35,8 @@ func ProcessDicomFile(filePath string) (*DicomFile, error) {
 	}
 	instanceNumberStr, err := getElementValue(dataset, tag.InstanceNumber)
 	if err != nil {
-		return nil, err
+		// InstanceNumber can also be optional, default to 0
+		instanceNumberStr = "0"
 	}
 
 	acquisitionNumber, _ := strconv.Atoi(acquisitionNumberStr)
