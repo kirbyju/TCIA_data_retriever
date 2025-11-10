@@ -399,6 +399,17 @@ func (info *FileInfo) NeedsDownload(output string, force bool, noDecompress bool
 		// and we assume the file needs to be downloaded.
 		return true
 	}
+	if strings.HasPrefix(info.DownloadURL, "s3://") {
+		// For s5cmd, check if the target file exists in the output directory
+		fileName := filepath.Base(info.DownloadURL)
+		targetPath = filepath.Join(output, fileName)
+		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+			logger.Debugf("S3 target file %s does not exist, need to download", targetPath)
+			return true
+		}
+		logger.Debugf("S3 target file %s exists, skipping", targetPath)
+		return false
+	}
 	if info.DownloadURL != "" {
 		targetPath = filepath.Join(output, info.SeriesUID)
 		_, err := os.Stat(targetPath)
@@ -759,6 +770,8 @@ func (info *FileInfo) downloadFromS3(output string, options *Options) error {
 	if err != nil {
 		return fmt.Errorf("s5cmd command failed for %s: %s\nOutput: %s", info.DownloadURL, err, string(stdout))
 	}
+
+	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
 
 	// The downloaded file will be in the output directory with its original name.
 	// We will handle renaming and moving it later.

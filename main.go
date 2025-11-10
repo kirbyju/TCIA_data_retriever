@@ -185,7 +185,7 @@ func main() {
 
 		// Determine the item type for messaging
 		itemType := "series"
-		if len(files) > 0 && (files[0].DRSURI != "" || strings.HasPrefix(files[0].DownloadURL, "s3://") || files[0].S5cmdManifestPath != "") {
+		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].S5cmdManifestPath != "") {
 			itemType = "files"
 		}
 
@@ -197,6 +197,7 @@ func main() {
 
 		wg.Add(options.Concurrent)
 		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
+		dicomFileChan := make(chan string, len(files)) // Channel to collect downloaded DICOM file paths
 
 		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
@@ -216,7 +217,7 @@ func main() {
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
 					// Skip metadata saving for spreadsheet inputs
-					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != ""
+					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdManifestPath != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
@@ -247,6 +248,12 @@ func main() {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
+								// If the downloaded file is a DICOM file from s5cmd, send it for processing
+								if strings.HasPrefix(fileInfo.DownloadURL, "s3://") {
+									downloadedFilePath := filepath.Join(ctx.Options.Output, fileInfo.FileName)
+									dicomFileChan <- downloadedFilePath
+								}
+
 								// Save metadata only for TCIA inputs
 								if !isSpreadsheetInput {
 									if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
@@ -272,33 +279,23 @@ func main() {
 		close(inputChan)
 		wg.Wait()
 
-		// Organize DICOM files if the input was an s5cmd manifest
-		if strings.HasSuffix(options.Input, ".s5cmd") {
-			fmt.Println("\nOrganizing downloaded DICOM files...")
-			var downloadedDicomFiles []*DicomFile
-			err := filepath.Walk(options.Output, func(path string, info os.FileInfo, err error) error {
+		// Close the dicom file channel and collect the paths
+		close(dicomFileChan)
+		var downloadedDicomFiles []*DicomFile
+		if len(dicomFileChan) > 0 {
+			fmt.Println("\nProcessing downloaded DICOM files...")
+			for path := range dicomFileChan {
+				dicomFile, err := ProcessDicomFile(path)
 				if err != nil {
-					return err
+					logger.Warnf("Could not process DICOM file %s: %v", path, err)
+					continue
 				}
-				if !info.IsDir() {
-					dicomFile, err := ProcessDicomFile(path)
-					if err != nil {
-						logger.Warnf("Could not process DICOM file %s: %v", path, err)
-						return nil // Continue walking
-					}
-					downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
-				}
-				return nil
-			})
-
-			if err != nil {
-				logger.Errorf("Error walking output directory: %v", err)
+				downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
 			}
-
 			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output); err != nil {
 				logger.Errorf("Error organizing DICOM files: %v", err)
 			}
-			fmt.Println("DICOM file organization complete.")
+			fmt.Println("DICOM file processing complete.")
 		}
 
 		// Final progress update

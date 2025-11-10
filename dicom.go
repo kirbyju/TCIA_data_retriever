@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/suyashkumar/dicom"
 	"github.com/suyashkumar/dicom/pkg/tag"
@@ -35,8 +37,7 @@ func ProcessDicomFile(filePath string) (*DicomFile, error) {
 	}
 	instanceNumberStr, err := getElementValue(dataset, tag.InstanceNumber)
 	if err != nil {
-		// InstanceNumber can also be optional, default to 0
-		instanceNumberStr = "0"
+		return nil, err
 	}
 
 	acquisitionNumber, _ := strconv.Atoi(acquisitionNumberStr)
@@ -55,7 +56,49 @@ func getElementValue(dataset dicom.Dataset, tag tag.Tag) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not find tag %v", tag)
 	}
-	return element.Value.String(), nil
+	// The dicom library sometimes returns values with brackets, so we trim them.
+	return strings.Trim(element.Value.String(), "[]"), nil
+}
+
+func SaveDicomMetadataToTSV(files []*DicomFile, outputDir string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	seriesUID := files[0].SeriesUID
+	metadataDir := filepath.Join(outputDir, "metadata")
+	if err := os.MkdirAll(metadataDir, 0755); err != nil {
+		return fmt.Errorf("could not create metadata directory: %v", err)
+	}
+	tsvPath := filepath.Join(metadataDir, fmt.Sprintf("%s.tsv", seriesUID))
+	tsvFile, err := os.Create(tsvPath)
+	if err != nil {
+		return fmt.Errorf("could not create TSV file: %v", err)
+	}
+	defer tsvFile.Close()
+
+	writer := csv.NewWriter(tsvFile)
+	writer.Comma = '\t'
+	defer writer.Flush()
+
+	// Write header
+	header := []string{"filepath", "acquisition_number", "instance_number"}
+	if err := writer.Write(header); err != nil {
+		return fmt.Errorf("could not write TSV header: %v", err)
+	}
+
+	// Write rows
+	for _, file := range files {
+		record := []string{
+			file.Path,
+			strconv.Itoa(file.AcquisitionNumber),
+			strconv.Itoa(file.InstanceNumber),
+		}
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("could not write TSV record: %v", err)
+		}
+	}
+
+	return nil
 }
 
 func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
@@ -65,6 +108,11 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 	}
 
 	for seriesUID, dicomFiles := range series {
+		// Save metadata to TSV
+		if err := SaveDicomMetadataToTSV(dicomFiles, outputDir); err != nil {
+			logger.Warnf("Could not save DICOM metadata for series %s: %v", seriesUID, err)
+		}
+
 		seriesDir := filepath.Join(outputDir, seriesUID)
 		if err := os.MkdirAll(seriesDir, 0755); err != nil {
 			return fmt.Errorf("could not create series directory %s: %v", seriesDir, err)
@@ -112,7 +160,7 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 
 			ordinalAcq := acquisitionMap[file.AcquisitionNumber]
 			// Format is Acquisition-Instance, with instance number padded.
-			newName := fmt.Sprintf("%04d-%04d.dcm", ordinalAcq, instanceCounter)
+			newName := fmt.Sprintf("%d-%04d.dcm", ordinalAcq, instanceCounter)
 			newPath := filepath.Join(seriesDir, newName)
 
 			// Check if source and destination are the same file to handle case-insensitive filesystems.
