@@ -44,7 +44,6 @@ type WorkerContext struct {
 	Options    *Options
 	Stats      *DownloadStats
 	WorkerID   int
-	DB         *ProcessedFilesDB
 }
 
 // SetupCloseHandler creates a 'listener' on a new goroutine which will notify the
@@ -160,32 +159,10 @@ func main() {
 			logger.Fatalf("Failed to create metadata directory: %v", err)
 		}
 
-		// Initialize the processed files database
-		db, err := NewProcessedFilesDB(options.Output)
-		if err != nil {
-			logger.Fatalf("Failed to initialize processed files database: %v", err)
-		}
-
 		var wg sync.WaitGroup
-		allFiles, err := decodeInputFile(options.Input, client, token, options)
+		files, err := decodeInputFile(options.Input, client, token, options)
 		if err != nil {
 			logger.Fatalf("Failed to decode input file: %v", err)
-		}
-
-		// For s5cmd, we need to know the total number of files, including skipped ones
-		totalFiles := len(allFiles)
-		var filesToDownload []*FileInfo
-		var skippedFiles int32
-		if strings.HasSuffix(options.Input, ".s5cmd") {
-			for _, file := range allFiles {
-				if !db.Contains(file.OriginalURI) {
-					filesToDownload = append(filesToDownload, file)
-				} else {
-					skippedFiles++
-				}
-			}
-		} else {
-			filesToDownload = allFiles
 		}
 
 		// If input is a spreadsheet, copy it to the metadata folder
@@ -201,25 +178,26 @@ func main() {
 			}
 		}
 
-		stats := &DownloadStats{Total: int32(totalFiles), Skipped: skippedFiles}
+		stats := &DownloadStats{Total: int32(len(files))}
 
 		// Initialize progress tracking
 		stats.StartTime = time.Now()
 
 		// Determine the item type for messaging
 		itemType := "series"
-		if len(allFiles) > 0 && (allFiles[0].DRSURI != "" || strings.HasPrefix(allFiles[0].DownloadURL, "s3://") || allFiles[0].S5cmdManifestPath != "") {
+		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].S5cmdManifestPath != "") {
 			itemType = "files"
 		}
 
 		if options.Debug {
-			logger.Infof("Starting download of %d %s with %d workers", len(filesToDownload), itemType, options.Concurrent)
+			logger.Infof("Starting download of %d %s with %d workers", len(files), itemType, options.Concurrent)
 		} else {
-			fmt.Fprintf(os.Stderr, "\nDownloading %d %s with %d workers...\n\n", len(filesToDownload), itemType, options.Concurrent)
+			fmt.Fprintf(os.Stderr, "\nDownloading %d %s with %d workers...\n\n", len(files), itemType, options.Concurrent)
 		}
 
 		wg.Add(options.Concurrent)
-		inputChan := make(chan *FileInfo, len(filesToDownload)) // Larger buffer to prevent blocking
+		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
+		dicomFileChan := make(chan string, len(files)) // Channel to collect downloaded DICOM file paths
 
 		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
@@ -229,7 +207,6 @@ func main() {
 				Options:    options,
 				Stats:      stats,
 				WorkerID:   i + 1,
-				DB:         db,
 			}
 
 			go func(ctx *WorkerContext, input chan *FileInfo) {
@@ -240,7 +217,7 @@ func main() {
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
 					// Skip metadata saving for spreadsheet inputs
-					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != ""
+					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdManifestPath != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
@@ -259,11 +236,26 @@ func main() {
 						updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					} else {
 						// Download images (and save metadata for TCIA inputs)
+						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false, ctx.Options.NoDecompress) {
+							logger.Debugf("[Worker %d] Skip existing %s", ctx.WorkerID, fileInfo.SeriesUID)
+							atomic.AddInt32(&ctx.Stats.Skipped, 1)
+							updateProgress(ctx.Stats, fileInfo.SeriesUID)
+							continue
+						}
+
 						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
 							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
+								// If the downloaded file is a DICOM file from s5cmd, send it for processing.
+								// We identify s5cmd downloads by checking if S5cmdManifestPath is set.
+								if fileInfo.S5cmdManifestPath != "" {
+									// The actual downloaded file path is now stored in FileName by the downloadFromS3 function.
+									downloadedFilePath := filepath.Join(ctx.Options.Output, fileInfo.FileName)
+									dicomFileChan <- downloadedFilePath
+								}
+
 								// Save metadata only for TCIA inputs
 								if !isSpreadsheetInput {
 									if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
@@ -283,50 +275,48 @@ func main() {
 			}(ctx, inputChan)
 		}
 
-		for _, f := range filesToDownload {
+		for _, f := range files {
 			inputChan <- f
 		}
 		close(inputChan)
 		wg.Wait()
 
-		// Organize DICOM files if the input was an s5cmd manifest
-		if strings.HasSuffix(options.Input, ".s5cmd") {
-			fmt.Println("\nOrganizing downloaded DICOM files...")
-			var downloadedDicomFiles []*DicomFile
-			// Create a map of downloaded file paths to their original S3 URIs
-			uriMap := make(map[string]string)
-			for _, file := range allFiles {
-				uriMap[filepath.Join(options.Output, filepath.Base(file.DownloadURL))] = file.OriginalURI
-			}
+		// Close the dicom file channel and collect the paths
+		close(dicomFileChan)
+		var downloadedDicomFiles []*DicomFile
+		if len(dicomFileChan) > 0 {
+			fmt.Fprintln(os.Stderr, "\nOrganizing downloaded DICOM files...")
+			var seriesUIDs []string
+			// Using a map to collect unique series UIDs
+			seriesUIDMap := make(map[string]struct{})
 
-			err := filepath.Walk(options.Output, func(path string, info os.FileInfo, err error) error {
+			for path := range dicomFileChan {
+				dicomFile, err := ProcessDicomFile(path)
 				if err != nil {
-					return err
+					logger.Warnf("Could not process DICOM file %s: %v", path, err)
+					continue
 				}
-				if !info.IsDir() {
-					originalURI, ok := uriMap[path]
-					if !ok {
-						// This file was not in our download list, or it's not a DICOM file we care about.
-						return nil
-					}
-					dicomFile, err := ProcessDicomFile(path, originalURI)
-					if err != nil {
-						logger.Warnf("Could not process DICOM file %s: %v", path, err)
-						return nil // Continue walking
-					}
-					downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
-				}
-				return nil
-			})
-
-			if err != nil {
-				logger.Errorf("Error walking output directory: %v", err)
+				downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
+				// Add the series UID to the map
+				seriesUIDMap[dicomFile.SeriesUID] = struct{}{}
 			}
 
-			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output, db); err != nil {
+			// Convert map keys to a slice for fetching metadata
+			for uid := range seriesUIDMap {
+				seriesUIDs = append(seriesUIDs, uid)
+			}
+
+			// Fetch metadata in bulk for all series found in the downloaded DICOMs.
+			// This is useful for getting consistent metadata for all series.
+			if len(seriesUIDs) > 0 {
+				_ = FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options)
+			}
+
+			// Organize the DICOM files.
+			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output); err != nil {
 				logger.Errorf("Error organizing DICOM files: %v", err)
 			}
-			fmt.Println("DICOM file organization complete.")
+			fmt.Fprintln(os.Stderr, "DICOM file organization complete.")
 		}
 
 		// Final progress update

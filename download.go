@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/csv"
@@ -156,8 +157,122 @@ func saveMetadataToCache(info *FileInfo, cachePath string) error {
 	return os.Rename(tempFile, cachePath)
 }
 
-// FetchMetadataForSeriesUIDs fetches metadata for a list of series UIDs in parallel
+// FetchMetadataForSeriesUIDs fetches metadata for a list of series UIDs in parallel.
+// It uses a bulk CSV download by default, but can fall back to individual JSON fetching.
 func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
+	// If the split metadata flag is set, use the old individual fetching method.
+	if options.SplitMetadata {
+		return fetchMetadataIndividually(seriesIDs, httpClient, authToken, options)
+	}
+	// Otherwise, use the new bulk fetching method.
+	return fetchMetadataInBulk(seriesIDs, httpClient, authToken, options)
+}
+
+// fetchMetadataInBulk fetches metadata for a list of series UIDs using a single POST request
+// that returns a CSV file containing the metadata for all series. This is much more efficient
+// than fetching metadata for each series individually.
+func fetchMetadataInBulk(seriesIDs []string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
+	fmt.Printf("Found %d series to fetch metadata for using bulk CSV download\n", len(seriesIDs))
+
+	// Get current access token.
+	accessToken, err := authToken.GetAccessToken()
+	if err != nil {
+		logger.Errorf("Failed to get access token: %v", err)
+		return nil
+	}
+
+	// Prepare the request data.
+	data := url.Values{}
+	data.Set("list", strings.Join(seriesIDs, ","))
+	data.Set("format", "csv")
+
+	// Create the request.
+	req, err := http.NewRequest("POST", SeriesUrl, strings.NewReader(data.Encode()))
+	if err != nil {
+		logger.Errorf("Failed to create request: %v", err)
+		return nil
+	}
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	// Set a timeout for the metadata request.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second) // 5 minutes
+	req = req.WithContext(ctx)
+
+	// Perform the request.
+	resp, err := doRequest(httpClient, req)
+	cancel() // Cancel context after request.
+	if err != nil {
+		logger.Errorf("Failed to perform request: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Check for authentication errors.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		logger.Errorf("Authentication failed (status: %s). Please check your credentials.", resp.Status)
+		return nil
+	}
+
+	// Read the response body into a buffer.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Errorf("Failed to read response body: %v", err)
+		return nil
+	}
+
+	// Save the CSV response to a file.
+	metadataDir := filepath.Join(options.Output, "metadata")
+	if err := os.MkdirAll(metadataDir, 0755); err != nil {
+		logger.Errorf("Failed to create metadata directory: %v", err)
+		return nil
+	}
+	csvPath := filepath.Join(metadataDir, "series_metadata.csv")
+	if err := os.WriteFile(csvPath, body, 0644); err != nil {
+		logger.Errorf("Failed to save metadata CSV: %v", err)
+		return nil
+	}
+
+	// Parse the CSV from the buffer.
+	reader := csv.NewReader(bytes.NewReader(body))
+	records, err := reader.ReadAll()
+	if err != nil {
+		logger.Errorf("Failed to parse metadata CSV: %v", err)
+		return nil
+	}
+	if len(records) < 2 {
+		logger.Warn("Metadata CSV is empty or contains only a header.")
+		return nil
+	}
+
+	// Create a map of header names to their index for robust column lookup.
+	header := make(map[string]int)
+	for i, h := range records[0] {
+		header[h] = i
+	}
+
+	// Create a slice of FileInfo structs from the parsed CSV records.
+	var files []*FileInfo
+	for _, record := range records[1:] {
+		file := &FileInfo{
+			SeriesUID:    record[header["Series UID"]],
+			Collection:   record[header["Collection"]],
+			SubjectID:    record[header["Subject ID"]],
+			StudyUID:     record[header["Study UID"]],
+			StudyDate:    record[header["Study Date"]],
+			SeriesNumber: record[header["Series Number"]],
+			Modality:     record[header["Modality"]],
+			FileSize:     record[header["File Size"]],
+		}
+		files = append(files, file)
+	}
+
+	fmt.Printf("Successfully fetched and parsed metadata for %d files from bulk CSV\n", len(files))
+	return files
+}
+
+// fetchMetadataIndividually fetches metadata for each series UID individually
+func fetchMetadataIndividually(seriesIDs []string, httpClient *http.Client, authToken *Token, options *Options) []*FileInfo {
 	fmt.Printf("Found %d series to fetch metadata for\n", len(seriesIDs))
 
 	// Initialize metadata stats
@@ -353,7 +468,6 @@ type FileInfo struct {
 	DRSURI             string `json:"drs_uri,omitempty"`
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
-	OriginalURI        string `json:"original_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)

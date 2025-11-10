@@ -81,22 +81,6 @@ func (token *Token) GetAccessToken() (string, error) {
 	return token.AccessToken, nil
 }
 
-func makeURL(url_ string, values map[string]interface{}) (string, error) {
-	u, err := url.Parse(url_)
-	if err != nil {
-		return url_, fmt.Errorf("failed to parse url: %v", err)
-	}
-
-	queries := u.Query()
-
-	for k, v := range values {
-		queries.Set(k, fmt.Sprintf("%v", v))
-	}
-
-	u.RawQuery = queries.Encode()
-	return u.String(), nil
-}
-
 // NewToken create token from official NBIA API
 func NewToken(username, passwd, path string) (*Token, error) {
 	logger.Debugf("creating token")

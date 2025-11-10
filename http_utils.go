@@ -5,48 +5,30 @@ import (
 	"strings"
 )
 
-// doRequest performs an HTTP request with automatic v2 -> v1 fallback
-// This provides a graceful degradation when v2 endpoints are unavailable
+// doRequest performs an HTTP request
 func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
-	// Save original URL for potential fallback
-	originalURL := req.URL.String()
+	return client.Do(req)
+}
 
-	// Try the request as-is
-	resp, err := client.Do(req)
-
-	// If successful or not a v2 endpoint, return as-is
-	if err != nil || !strings.Contains(originalURL, "/v2/") {
-		return resp, err
+// makeURL creates a URL with query parameters
+func makeURL(baseURL string, params map[string]interface{}) (string, error) {
+	if len(params) == 0 {
+		return baseURL, nil
 	}
 
-	// Check if we should fallback to v1
-	// Fallback on: 404 (endpoint not found), 500-504 (server errors), 502 (bad gateway)
-	if resp.StatusCode == 404 || (resp.StatusCode >= 500 && resp.StatusCode <= 504) {
-		logger.Warnf("v2 endpoint returned %d, falling back to v1: %s", resp.StatusCode, originalURL)
-		resp.Body.Close()
+	var sb strings.Builder
+	sb.WriteString(baseURL)
+	sb.WriteRune('?')
 
-		// Create v1 URL
-		v1URL := strings.Replace(originalURL, "/v2/", "/v1/", 1)
-
-		// Create new request with v1 URL
-		v1Req, err := http.NewRequest(req.Method, v1URL, req.Body)
-		if err != nil {
-			return nil, err
+	first := true
+	for key, value := range params {
+		if !first {
+			sb.WriteRune('&')
 		}
-
-		// Copy headers
-		v1Req.Header = req.Header.Clone()
-
-		// Copy context if present
-		if req.Context() != nil {
-			v1Req = v1Req.WithContext(req.Context())
-		}
-
-		// Try v1 endpoint
-		logger.Infof("Attempting v1 endpoint: %s", v1URL)
-		return client.Do(v1Req)
+		first = false
+		sb.WriteString(key)
+		sb.WriteRune('=')
+		sb.WriteString(value.(string))
 	}
-
-	// Return original response for other status codes
-	return resp, nil
+	return sb.String(), nil
 }
