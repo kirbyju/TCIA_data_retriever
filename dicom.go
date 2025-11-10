@@ -18,9 +18,10 @@ type DicomFile struct {
 	SeriesUID        string
 	AcquisitionNumber int
 	InstanceNumber   int
+	OriginalURI      string // The original S3 URI
 }
 
-func ProcessDicomFile(filePath string) (*DicomFile, error) {
+func ProcessDicomFile(filePath string, originalURI string) (*DicomFile, error) {
 	dataset, err := dicom.ParseFile(filePath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse DICOM file %s: %v", filePath, err)
@@ -37,7 +38,8 @@ func ProcessDicomFile(filePath string) (*DicomFile, error) {
 	}
 	instanceNumberStr, err := getElementValue(dataset, tag.InstanceNumber)
 	if err != nil {
-		return nil, err
+		// InstanceNumber can also be optional, default to 0
+		instanceNumberStr = "0"
 	}
 
 	acquisitionNumber, _ := strconv.Atoi(acquisitionNumberStr)
@@ -48,6 +50,7 @@ func ProcessDicomFile(filePath string) (*DicomFile, error) {
 		SeriesUID:        seriesUID,
 		AcquisitionNumber: acquisitionNumber,
 		InstanceNumber:   instanceNumber,
+		OriginalURI:      originalURI,
 	}, nil
 }
 
@@ -101,7 +104,7 @@ func SaveDicomMetadataToTSV(files []*DicomFile, outputDir string) error {
 	return nil
 }
 
-func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
+func OrganizeDicomFiles(files []*DicomFile, outputDir string, db *ProcessedFilesDB) error {
 	series := make(map[string][]*DicomFile)
 	for _, file := range files {
 		series[file.SeriesUID] = append(series[file.SeriesUID], file)
@@ -160,7 +163,7 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 
 			ordinalAcq := acquisitionMap[file.AcquisitionNumber]
 			// Format is Acquisition-Instance, with instance number padded.
-			newName := fmt.Sprintf("%d-%04d.dcm", ordinalAcq, instanceCounter)
+			newName := fmt.Sprintf("%04d-%04d.dcm", ordinalAcq, instanceCounter)
 			newPath := filepath.Join(seriesDir, newName)
 
 			// Check if source and destination are the same file to handle case-insensitive filesystems.
@@ -173,6 +176,10 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 				// Destination exists.
 				if os.SameFile(srcInfo, destInfo) {
 					logger.Debugf("Skipping rename, source and destination are the same: %s", file.Path)
+					// Still add to DB even if we skip the rename
+					if err := db.Add(file.OriginalURI); err != nil {
+						logger.Warnf("Failed to add %s to processed files database: %v", file.OriginalURI, err)
+					}
 					continue
 				}
 			} else if !os.IsNotExist(err) {
@@ -184,6 +191,10 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 				// On Windows, rename can fail if the destination exists. Try move/copy+delete as a fallback.
 				// For this simple case, we just log the error.
 				return fmt.Errorf("could not rename file %s to %s: %v", file.Path, newPath, err)
+			}
+			// Add to the database of processed files
+			if err := db.Add(file.OriginalURI); err != nil {
+				logger.Warnf("Failed to add %s to processed files database: %v", file.OriginalURI, err)
 			}
 		}
 	}

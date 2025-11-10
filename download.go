@@ -353,6 +353,7 @@ type FileInfo struct {
 	DRSURI             string `json:"drs_uri,omitempty"`
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
+	OriginalURI        string `json:"original_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -398,17 +399,6 @@ func (info *FileInfo) NeedsDownload(output string, force bool, noDecompress bool
 		// s5cmd downloads files to the output directory, so we can't check for a specific file
 		// and we assume the file needs to be downloaded.
 		return true
-	}
-	if strings.HasPrefix(info.DownloadURL, "s3://") {
-		// For s5cmd, check if the target file exists in the output directory
-		fileName := filepath.Base(info.DownloadURL)
-		targetPath = filepath.Join(output, fileName)
-		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-			logger.Debugf("S3 target file %s does not exist, need to download", targetPath)
-			return true
-		}
-		logger.Debugf("S3 target file %s exists, skipping", targetPath)
-		return false
 	}
 	if info.DownloadURL != "" {
 		targetPath = filepath.Join(output, info.SeriesUID)

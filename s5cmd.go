@@ -41,7 +41,8 @@ func decodeS5cmd(filePath string) ([]*FileInfo, error) {
 		files = append(files, &FileInfo{
 			DownloadURL: s3uri,
 			// Using the base of the S3 path as a temporary SeriesUID for progress tracking
-			SeriesUID: filepath.Base(s3uri),
+			SeriesUID:   filepath.Base(s3uri),
+			OriginalURI: s3uri,
 		})
 	}
 
