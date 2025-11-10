@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/csv"
@@ -798,6 +799,43 @@ type AccessMethod struct {
 	Type     string `json:"type"`
 }
 
+// getGen3AccessToken retrieves an access token from Gen3 using an API key
+func getGen3AccessToken(client *http.Client, commonsURL, apiKey string) (string, error) {
+	apiEndpoint := fmt.Sprintf("https://%s/user/credentials/api/access_token", commonsURL)
+	apiKeyJSON, err := json.Marshal(map[string]string{"api_key": apiKey})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal API key: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBuffer(apiKeyJSON))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request for access token: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to make request for access token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Gen3 access token endpoint returned status %s", resp.Status)
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode access token response: %v", err)
+	}
+
+	accessToken, ok := result["access_token"]
+	if !ok {
+		return "", fmt.Errorf("no 'access_token' found in Gen3 response")
+	}
+
+	return accessToken, nil
+}
+
 // getGen3DownloadURL retrieves the download URL from a Gen3 server
 func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
 	apiEndpoint := fmt.Sprintf("https://%s/user/data/download/%s", commonsURL, objectID)
@@ -823,7 +861,11 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 		if apiKey.APIKey == "" {
 			return "", fmt.Errorf("'api_key' not found in JSON key file")
 		}
-		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(apiKey.APIKey)))
+		accessToken, err := getGen3AccessToken(client, commonsURL, strings.TrimSpace(apiKey.APIKey))
+		if err != nil {
+			return "", fmt.Errorf("failed to get access token: %v", err)
+		}
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 	}
 
 	// Log the request for debugging
