@@ -89,9 +89,11 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 			continue
 		}
 
-		// Create a temporary directory for this series
-		tempDirName := "s5cmd-" + filepath.Base(originalURI)
-		tempDirName = strings.ReplaceAll(tempDirName, "*", "") // Clean up for valid directory name
+		// Create a unique temporary directory for this series
+		// Robustly parse the unique series identifier from the URI
+		cleanURI := strings.TrimSuffix(originalURI, "/*")
+		seriesGUID := filepath.Base(cleanURI)
+		tempDirName := "s5cmd-" + seriesGUID
 		tempDirPath := filepath.Join(outputDir, tempDirName)
 
 		if err := os.MkdirAll(tempDirPath, 0755); err != nil {
@@ -112,8 +114,6 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 		return nil, fmt.Errorf("error reading s5cmd manifest: %w", err)
 	}
 
-	// Note: The total number of items for the progress bar will be the number of series, not files.
-	// This is a change in behavior but is necessary for the performance improvement.
 	logger.Infof("Found %d series to download from s5cmd manifest", len(seriesToDownload))
 	return seriesToDownload, nil
 }
