@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go.uber.org/zap"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,12 +40,12 @@ type DownloadStats struct {
 
 // WorkerContext contains all dependencies for workers
 type WorkerContext struct {
-	HTTPClient    *http.Client
-	AuthToken     *Token
-	Gen3Auth      *Gen3AuthManager
-	Options       *Options
-	Stats         *DownloadStats
-	WorkerID      int
+	HTTPClient *http.Client
+	AuthToken  *Token
+	Gen3Auth   *Gen3AuthManager
+	Options    *Options
+	Stats      *DownloadStats
+	WorkerID   int
 }
 
 // SetupCloseHandler creates a 'listener' on a new goroutine which will notify the
@@ -61,28 +62,32 @@ func setupCloseHandler() {
 }
 
 // decodeInputFile determines the input file type and calls the appropriate decoder
-func decodeInputFile(filePath string, client *http.Client, token *Token, options *Options) ([]*FileInfo, error) {
+func decodeInputFile(filePath string, client *http.Client, token *Token, options *Options, s5cmdMap map[string]string) ([]*FileInfo, int, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".tcia":
-		return decodeTCIA(filePath, client, token, options), nil
+		files, err := decodeTCIA(filePath, client, token, options)
+		return files, 0, err
 	case ".s5cmd":
-		return decodeS5cmd(filePath)
+		files, newJobs := decodeS5cmd(filePath, options.Output, s5cmdMap)
+		return files, newJobs, nil
 	case ".csv", ".tsv", ".xlsx":
 		// Try to decode as a SeriesInstanceUID spreadsheet first
 		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
 		if err == nil {
 			// Success, handle like a TCIA manifest
-			return FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options), nil
+			files, err := FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options)
+			return files, 0, err
 		} else if err != ErrSeriesUIDColumnNotFound {
 			// A real error occurred
-			return nil, fmt.Errorf("could not get series UIDs from spreadsheet: %w", err)
+			return nil, 0, fmt.Errorf("could not get series UIDs from spreadsheet: %w", err)
 		}
 
 		// Fallback to regular spreadsheet handling
-		return decodeSpreadsheet(filePath)
+		files, err := decodeSpreadsheet(filePath)
+		return files, 0, err
 	default:
-		return nil, fmt.Errorf("unsupported input file format: %s", ext)
+		return nil, 0, fmt.Errorf("unsupported input file format: %s", ext)
 	}
 }
 
@@ -160,8 +165,14 @@ func main() {
 			logger.Fatalf("Failed to create metadata directory: %v", err)
 		}
 
+		// Load the s5cmd series map
+		s5cmdMap, err := loadS5cmdSeriesMap(options.Output)
+		if err != nil {
+			logger.Fatalf("Failed to load s5cmd series map: %v", err)
+		}
+
 		var wg sync.WaitGroup
-		files, err := decodeInputFile(options.Input, client, token, options)
+		files, newS5cmdJobs, err := decodeInputFile(options.Input, client, token, options, s5cmdMap)
 		if err != nil {
 			logger.Fatalf("Failed to decode input file: %v", err)
 		}
@@ -170,9 +181,6 @@ func main() {
 		ext := strings.ToLower(filepath.Ext(options.Input))
 		if ext == ".csv" || ext == ".tsv" || ext == ".xlsx" {
 			metaDir := filepath.Join(options.Output, "metadata")
-			if err := os.MkdirAll(metaDir, 0755); err != nil {
-				logger.Fatalf("Failed to create metadata directory: %v", err)
-			}
 			destPath := filepath.Join(metaDir, filepath.Base(options.Input))
 			if err := copyFile(options.Input, destPath); err != nil {
 				logger.Warnf("Failed to copy spreadsheet to metadata folder: %v", err)
@@ -180,14 +188,15 @@ func main() {
 		}
 
 		stats := &DownloadStats{Total: int32(len(files))}
-
-		// Initialize progress tracking
 		stats.StartTime = time.Now()
 
-		// Determine the item type for messaging
-		itemType := "series"
-		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].S5cmdManifestPath != "") {
-			itemType = "files"
+		itemType := "items"
+		if len(files) > 0 {
+			if files[0].S5cmdManifestPath != "" {
+				itemType = "series"
+			} else if files[0].DRSURI != "" || files[0].DownloadURL != "" {
+				itemType = "files"
+			}
 		}
 
 		if options.Debug {
@@ -197,8 +206,7 @@ func main() {
 		}
 
 		wg.Add(options.Concurrent)
-		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
-		dicomFileChan := make(chan string, len(files)) // Channel to collect downloaded DICOM file paths
+		inputChan := make(chan *FileInfo, len(files))
 
 		// Create Gen3 Auth Manager
 		gen3Auth, err := NewGen3AuthManager(client, options.Auth)
@@ -206,7 +214,6 @@ func main() {
 			logger.Fatalf("Failed to initialize Gen3 auth manager: %v", err)
 		}
 
-		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
 			ctx := &WorkerContext{
 				HTTPClient: client,
@@ -220,20 +227,16 @@ func main() {
 			go func(ctx *WorkerContext, input chan *FileInfo) {
 				defer wg.Done()
 				for fileInfo := range input {
-					// Update progress display
 					updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
-					// Skip metadata saving for spreadsheet inputs
 					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdManifestPath != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
-							// For spreadsheets, --meta is a no-op, just skip.
-							logger.Debugf("[Worker %d] Skipping metadata for spreadsheet entry %s", ctx.WorkerID, fileInfo.SeriesUID)
+							logger.Debugf("[Worker %d] Skipping metadata for item %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
 						} else {
-							// Only download metadata for TCIA inputs
 							if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
 								logger.Warnf("[Worker %d] Save meta info %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
@@ -241,28 +244,15 @@ func main() {
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
 						}
-						updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					} else {
-						// Download images (and save metadata for TCIA inputs)
 						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false, ctx.Options.NoDecompress) {
 							logger.Debugf("[Worker %d] Skip existing %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
-							continue
-						}
-
-						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
+						} else if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
 							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Gen3Auth, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
-								// If the downloaded file is a DICOM file from s5cmd, send it for processing
-								if strings.HasPrefix(fileInfo.DownloadURL, "s3://") {
-									downloadedFilePath := filepath.Join(ctx.Options.Output, fileInfo.FileName)
-									dicomFileChan <- downloadedFilePath
-								}
-
-								// Save metadata only for TCIA inputs
 								if !isSpreadsheetInput {
 									if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
 										logger.Warnf("[Worker %d] Save meta info %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
@@ -270,13 +260,12 @@ func main() {
 								}
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						} else {
 							logger.Debugf("[Worker %d] Skip %s (already exists with correct size/checksum)", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						}
 					}
+					updateProgress(ctx.Stats, fileInfo.SeriesUID)
 				}
 			}(ctx, inputChan)
 		}
@@ -287,36 +276,59 @@ func main() {
 		close(inputChan)
 		wg.Wait()
 
-		// Close the dicom file channel and collect the paths
-		close(dicomFileChan)
-		var downloadedDicomFiles []*DicomFile
-		if len(dicomFileChan) > 0 {
-			fmt.Println("\nProcessing downloaded DICOM files...")
-			for path := range dicomFileChan {
-				dicomFile, err := ProcessDicomFile(path)
-				if err != nil {
-					logger.Warnf("Could not process DICOM file %s: %v", path, err)
+		// Post-processing for s5cmd series
+		if newS5cmdJobs > 0 {
+			fmt.Println("\nOrganizing s5cmd downloaded series...")
+			for _, seriesInfo := range files {
+				// Skip post-processing for sync jobs and non-s5cmd files
+				if seriesInfo.IsSyncJob || seriesInfo.S5cmdManifestPath == "" {
 					continue
 				}
-				downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
+
+				tempDir := seriesInfo.S5cmdManifestPath
+				filesInDir, err := ioutil.ReadDir(tempDir)
+				if err != nil {
+					logger.Warnf("Could not read temp directory %s: %v", tempDir, err)
+					continue
+				}
+				if len(filesInDir) == 0 {
+					logger.Warnf("No files found in temp directory %s for series %s", tempDir, seriesInfo.OriginalS5cmdURI)
+					os.Remove(tempDir) // Clean up empty temp dir
+					continue
+				}
+
+				// Get SeriesUID from the first file
+				firstFilePath := filepath.Join(tempDir, filesInDir[0].Name())
+				firstDicom, err := ProcessDicomFile(firstFilePath)
+				if err != nil {
+					logger.Warnf("Could not process DICOM file %s to get SeriesUID: %v", firstFilePath, err)
+					continue
+				}
+				seriesUID := firstDicom.SeriesUID
+				finalDir := filepath.Join(options.Output, seriesUID)
+
+				if err := os.Rename(tempDir, finalDir); err != nil {
+					logger.Errorf("Could not rename temp dir %s to %s: %v", tempDir, finalDir, err)
+					continue
+				}
+
+				s5cmdMap[seriesInfo.OriginalS5cmdURI] = seriesUID
 			}
-			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output); err != nil {
-				logger.Errorf("Error organizing DICOM files: %v", err)
+			if err := saveS5cmdSeriesMap(options.Output, s5cmdMap); err != nil {
+				logger.Errorf("Failed to save s5cmd series map: %v", err)
 			}
-			fmt.Println("DICOM file processing complete.")
+			fmt.Println("s5cmd series organization complete.")
 		}
 
-		// Final progress update
 		updateProgress(stats, "Complete")
 
-		// Clear progress line in non-debug mode
 		if !options.Debug {
 			fmt.Fprintf(os.Stderr, "\n")
 		}
 
 		elapsed := time.Since(stats.StartTime)
 		fmt.Println("\n=== Download Summary ===")
-		fmt.Printf("Total files: %d\n", stats.Total)
+		fmt.Printf("Total items: %d\n", stats.Total)
 		fmt.Printf("Downloaded: %d\n", stats.Downloaded)
 		fmt.Printf("Skipped: %d\n", stats.Skipped)
 		fmt.Printf("Failed: %d\n", stats.Failed)
@@ -324,7 +336,7 @@ func main() {
 
 		if stats.Total > 0 {
 			rate := float64(stats.Downloaded+stats.Skipped) / elapsed.Seconds()
-			fmt.Printf("Average rate: %.1f files/second\n", rate)
+			fmt.Printf("Average rate: %.1f items/second\n", rate)
 		}
 
 		if stats.Failed > 0 {
