@@ -2,11 +2,9 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,61 +56,6 @@ func updateS5cmdSeriesMap(originalURI, seriesUID string) {
 	s5cmdSeriesMap[originalURI] = seriesUID
 }
 
-// expandS5cmdURI expands a wildcard URI using "s5cmd ls --json"
-func expandS5cmdURI(s3uri string) ([]string, error) {
-	if !strings.Contains(s3uri, "*") {
-		return []string{s3uri}, nil
-	}
-
-	// Extract bucket name to construct the full URI if the key is not already a full URI
-	uriParts := strings.SplitN(strings.TrimPrefix(s3uri, "s3://"), "/", 2)
-	if len(uriParts) < 1 {
-		return nil, fmt.Errorf("invalid s3 uri for bucket extraction: %s", s3uri)
-	}
-	bucket := uriParts[0]
-
-	cmd := exec.Command("s5cmd", "--json", "--no-sign-request", "--endpoint-url", "https://s3.amazonaws.com", "ls", s3uri)
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("s5cmd ls --json failed for %s: %v\nStderr: %s", s3uri, err, stderr.String())
-	}
-
-	type S5cmdLsObject struct {
-		Key string `json:"key"`
-	}
-
-	var expandedFiles []string
-	scanner := bufio.NewScanner(&out)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var lsObject S5cmdLsObject
-		if err := json.Unmarshal([]byte(line), &lsObject); err != nil {
-			logger.Warnf("Could not parse JSON line from s5cmd ls output: %v", err)
-			continue
-		}
-
-		if lsObject.Key != "" {
-			var fullURI string
-			// Defensive check: if the key is already a full URI, use it directly.
-			// Otherwise, construct it from the bucket and the key.
-			if strings.HasPrefix(lsObject.Key, "s3://") {
-				fullURI = lsObject.Key
-			} else {
-				fullURI = fmt.Sprintf("s3://%s/%s", bucket, lsObject.Key)
-			}
-			expandedFiles = append(expandedFiles, fullURI)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading s5cmd ls --json output: %w", err)
-	}
-
-	return expandedFiles, nil
-}
-
 func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -126,7 +69,7 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 		return nil, fmt.Errorf("failed to load s5cmd series map: %w", err)
 	}
 
-	var filesToDownload []*FileInfo
+	var seriesToDownload []*FileInfo
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -146,17 +89,9 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 			continue
 		}
 
-		// Expand the URI if it contains a wildcard
-		expandedURIs, err := expandS5cmdURI(originalURI)
-		if err != nil {
-			logger.Warnf("Could not expand URI %s: %v", originalURI, err)
-			continue
-		}
-
 		// Create a temporary directory for this series
 		tempDirName := "s5cmd-" + filepath.Base(originalURI)
-		// Clean up wildcards for valid directory names
-		tempDirName = strings.ReplaceAll(tempDirName, "*", "")
+		tempDirName = strings.ReplaceAll(tempDirName, "*", "") // Clean up for valid directory name
 		tempDirPath := filepath.Join(outputDir, tempDirName)
 
 		if err := os.MkdirAll(tempDirPath, 0755); err != nil {
@@ -164,21 +99,21 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 			continue
 		}
 
-		for _, expandedURI := range expandedURIs {
-			filesToDownload = append(filesToDownload, &FileInfo{
-				DownloadURL:      expandedURI,
-				SeriesUID:        filepath.Base(expandedURI), // Temporary UID for progress
-				OriginalS5cmdURI: originalURI,
-				// Store the temporary directory path in S5cmdManifestPath for the worker to use
-				S5cmdManifestPath: tempDirPath,
-			})
-		}
+		// Create a single FileInfo object for the entire series download
+		seriesToDownload = append(seriesToDownload, &FileInfo{
+			DownloadURL:      originalURI,
+			SeriesUID:        filepath.Base(originalURI), // Use URI base as a temporary ID for progress tracking
+			OriginalS5cmdURI: originalURI,
+			S5cmdManifestPath: tempDirPath, // This field now holds the target directory for the series download
+		})
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading s5cmd manifest: %w", err)
 	}
 
-	logger.Infof("Found %d files to download from s5cmd manifest", len(filesToDownload))
-	return filesToDownload, nil
+	// Note: The total number of items for the progress bar will be the number of series, not files.
+	// This is a change in behavior but is necessary for the performance improvement.
+	logger.Infof("Found %d series to download from s5cmd manifest", len(seriesToDownload))
+	return seriesToDownload, nil
 }

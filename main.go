@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go.uber.org/zap"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -178,15 +179,27 @@ func main() {
 			}
 		}
 
-		stats := &DownloadStats{Total: int32(len(files))}
+		// Separate s5cmd series from other files for post-processing
+		var s5cmdSeries []*FileInfo
+		var otherFiles []*FileInfo
+		for _, f := range files {
+			if f.S5cmdManifestPath != "" {
+				s5cmdSeries = append(s5cmdSeries, f)
+			} else {
+				otherFiles = append(otherFiles, f)
+			}
+		}
 
-		// Initialize progress tracking
+		stats := &DownloadStats{Total: int32(len(files))}
 		stats.StartTime = time.Now()
 
-		// Determine the item type for messaging
-		itemType := "series"
-		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].OriginalS5cmdURI != "") {
-			itemType = "files"
+		itemType := "items"
+		if len(files) > 0 {
+			if files[0].S5cmdManifestPath != "" {
+				itemType = "series"
+			} else if files[0].DRSURI != "" || files[0].DownloadURL != "" {
+				itemType = "files"
+			}
 		}
 
 		if options.Debug {
@@ -197,13 +210,8 @@ func main() {
 
 		wg.Add(options.Concurrent)
 		inputChan := make(chan *FileInfo, len(files))
-		dicomFileChan := make(chan string, len(files)) // Channel for non-s5cmd-manifest DICOM files
+		dicomFileChan := make(chan string, 1000) // Channel for individual DICOM files
 
-		// A map to track downloaded files per s5cmd series
-		s5cmdDownloads := make(map[string][]string)
-		var s5cmdMu sync.Mutex
-
-		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
 			ctx := &WorkerContext{
 				HTTPClient: client,
@@ -219,11 +227,11 @@ func main() {
 					updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
-					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.OriginalS5cmdURI != ""
+					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdManifestPath != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
-							logger.Debugf("[Worker %d] Skipping metadata for spreadsheet entry %s", ctx.WorkerID, fileInfo.SeriesUID)
+							logger.Debugf("[Worker %d] Skipping metadata for item %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
 						} else {
 							if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
@@ -233,30 +241,15 @@ func main() {
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
 						}
-						updateProgress(ctx.Stats, fileInfo.SeriesUID)
 					} else {
 						if ctx.Options.SkipExisting && !fileInfo.NeedsDownload(ctx.Options.Output, false, ctx.Options.NoDecompress) {
 							logger.Debugf("[Worker %d] Skip existing %s", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
-							continue
-						}
-
-						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
+						} else if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
 							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
-								if fileInfo.OriginalS5cmdURI != "" {
-									s5cmdMu.Lock()
-									downloadedFilePath := filepath.Join(fileInfo.S5cmdManifestPath, fileInfo.FileName)
-									s5cmdDownloads[fileInfo.OriginalS5cmdURI] = append(s5cmdDownloads[fileInfo.OriginalS5cmdURI], downloadedFilePath)
-									s5cmdMu.Unlock()
-								} else if strings.HasPrefix(fileInfo.DownloadURL, "s3://") {
-									downloadedFilePath := filepath.Join(ctx.Options.Output, fileInfo.FileName)
-									dicomFileChan <- downloadedFilePath
-								}
-
 								if !isSpreadsheetInput {
 									if err := fileInfo.GetMeta(ctx.Options.Output); err != nil {
 										logger.Warnf("[Worker %d] Save meta info %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
@@ -264,13 +257,12 @@ func main() {
 								}
 								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
 							}
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						} else {
 							logger.Debugf("[Worker %d] Skip %s (already exists with correct size/checksum)", ctx.WorkerID, fileInfo.SeriesUID)
 							atomic.AddInt32(&ctx.Stats.Skipped, 1)
-							updateProgress(ctx.Stats, fileInfo.SeriesUID)
 						}
 					}
+					updateProgress(ctx.Stats, fileInfo.SeriesUID)
 				}
 			}(ctx, inputChan)
 		}
@@ -281,18 +273,27 @@ func main() {
 		close(inputChan)
 		wg.Wait()
 
-		// Organize s5cmd downloads from manifests
-		if len(s5cmdDownloads) > 0 {
+		// Post-processing for s5cmd series
+		if len(s5cmdSeries) > 0 {
 			fmt.Println("\nOrganizing s5cmd downloaded series...")
-			for originalURI, downloadedFiles := range s5cmdDownloads {
-				if len(downloadedFiles) == 0 {
+			for _, seriesInfo := range s5cmdSeries {
+				tempDir := seriesInfo.S5cmdManifestPath
+				filesInDir, err := ioutil.ReadDir(tempDir)
+				if err != nil {
+					logger.Warnf("Could not read temp directory %s: %v", tempDir, err)
+					continue
+				}
+				if len(filesInDir) == 0 {
+					logger.Warnf("No files found in temp directory %s for series %s", tempDir, seriesInfo.OriginalS5cmdURI)
+					os.Remove(tempDir) // Clean up empty temp dir
 					continue
 				}
 
-				tempDir := filepath.Dir(downloadedFiles[0])
-				firstDicom, err := ProcessDicomFile(downloadedFiles[0])
+				// Get SeriesUID from the first file
+				firstFilePath := filepath.Join(tempDir, filesInDir[0].Name())
+				firstDicom, err := ProcessDicomFile(firstFilePath)
 				if err != nil {
-					logger.Warnf("Could not process DICOM file to get SeriesUID for %s: %v", originalURI, err)
+					logger.Warnf("Could not process DICOM file %s to get SeriesUID: %v", firstFilePath, err)
 					continue
 				}
 				seriesUID := firstDicom.SeriesUID
@@ -303,12 +304,12 @@ func main() {
 					continue
 				}
 
-				updateS5cmdSeriesMap(originalURI, seriesUID)
+				updateS5cmdSeriesMap(seriesInfo.OriginalS5cmdURI, seriesUID)
 
-				// Now that the directory is renamed, create DicomFile objects for organization
+				// Organize the files within the final directory
 				var dicomFilesToOrganize []*DicomFile
-				for _, oldPath := range downloadedFiles {
-					newPath := filepath.Join(finalDir, filepath.Base(oldPath))
+				for _, fileInfo := range filesInDir {
+					newPath := filepath.Join(finalDir, fileInfo.Name())
 					dicomFile, err := ProcessDicomFile(newPath)
 					if err != nil {
 						logger.Warnf("Could not process DICOM file %s for organization: %v", newPath, err)
@@ -316,8 +317,6 @@ func main() {
 					}
 					dicomFilesToOrganize = append(dicomFilesToOrganize, dicomFile)
 				}
-
-				// Organize the files within the newly named series directory
 				if err := OrganizeSeriesFiles(dicomFilesToOrganize, finalDir); err != nil {
 					logger.Errorf("Error organizing files for series %s: %v", seriesUID, err)
 				}
@@ -328,7 +327,7 @@ func main() {
 			fmt.Println("s5cmd series organization complete.")
 		}
 
-		// Process other individually downloaded DICOM files
+		// Post-processing for other DICOM files
 		close(dicomFileChan)
 		if len(dicomFileChan) > 0 {
 			var downloadedDicomFiles []*DicomFile
@@ -355,7 +354,7 @@ func main() {
 
 		elapsed := time.Since(stats.StartTime)
 		fmt.Println("\n=== Download Summary ===")
-		fmt.Printf("Total files: %d\n", stats.Total)
+		fmt.Printf("Total items: %d\n", stats.Total)
 		fmt.Printf("Downloaded: %d\n", stats.Downloaded)
 		fmt.Printf("Skipped: %d\n", stats.Skipped)
 		fmt.Printf("Failed: %d\n", stats.Failed)
@@ -363,7 +362,7 @@ func main() {
 
 		if stats.Total > 0 {
 			rate := float64(stats.Downloaded+stats.Skipped) / elapsed.Seconds()
-			fmt.Printf("Average rate: %.1f files/second\n", rate)
+			fmt.Printf("Average rate: %.1f items/second\n", rate)
 		}
 
 		if stats.Failed > 0 {

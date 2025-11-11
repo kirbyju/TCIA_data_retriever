@@ -353,7 +353,6 @@ type FileInfo struct {
 	DRSURI             string `json:"drs_uri,omitempty"`
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
-	OriginalS5cmdURI   string `json:"original_s5cmd_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -728,11 +727,12 @@ func isRetryableError(err error) bool {
 
 // doDownload is a dispatcher for different download types
 func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
-	// For s5cmd downloads, the S5cmdManifestPath field holds the temporary directory
-	if info.OriginalS5cmdURI != "" {
+	// For s5cmd manifest downloads, S5cmdManifestPath is set to the temporary series directory
+	if info.S5cmdManifestPath != "" {
 		return info.downloadFromS3(info.S5cmdManifestPath, options)
 	}
 	if strings.HasPrefix(info.DownloadURL, "s3://") {
+		// This handles other potential S3 downloads that are not from a manifest
 		return info.downloadFromS3(output, options)
 	}
 	if info.DRSURI != "" {
@@ -744,12 +744,11 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 	return info.downloadFromTCIA(output, httpClient, authToken, options)
 }
 
-// downloadFromS3 downloads a file from S3 using the s5cmd command-line tool.
+// downloadFromS3 downloads a file (or files, using a wildcard) from S3 using the s5cmd command-line tool.
 func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
 	logger.Debugf("Downloading from S3: %s to %s", info.DownloadURL, targetDir)
 
-	// Construct the s5cmd command to download a single file
-	// s5cmd --no-sign-request --endpoint-url https://s3.amazonaws.com cp <s3-uri> .
+	// Construct the s5cmd command to download a single file or a series with a wildcard
 	cmd := exec.Command("s5cmd",
 		"--no-sign-request",
 		"--endpoint-url", "https://s3.amazonaws.com",
@@ -767,9 +766,8 @@ func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
 
 	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
 
-	// The downloaded file will be in the output directory with its original name.
-	info.FileName = filepath.Base(info.DownloadURL) // Store the downloaded filename
-
+	// Note: We no longer track individual filenames here. The post-processing
+	// step will list the directory contents to find the downloaded files.
 	return nil
 }
 
