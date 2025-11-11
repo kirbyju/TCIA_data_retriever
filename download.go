@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/csv"
@@ -663,16 +664,16 @@ func (info *FileInfo) GetMeta(output string) error {
 }
 
 // Download is real function to download file with retry logic
-func (info *FileInfo) Download(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+func (info *FileInfo) Download(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
 	// Add rate limiting delay between requests
 	if options.RequestDelay > 0 {
 		time.Sleep(options.RequestDelay)
 	}
-	return info.DownloadWithRetry(output, httpClient, authToken, options)
+	return info.DownloadWithRetry(output, httpClient, authToken, gen3Auth, options)
 }
 
 // DownloadWithRetry downloads file with retry logic and exponential backoff
-func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
 	var lastErr error
 	delay := options.RetryDelay
 
@@ -683,7 +684,7 @@ func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, 
 			delay *= 2 // Exponential backoff
 		}
 
-		err := info.doDownload(output, httpClient, authToken, options)
+		err := info.doDownload(output, httpClient, authToken, gen3Auth, options)
 		if err == nil {
 			return nil
 		}
@@ -720,7 +721,7 @@ func isRetryableError(err error) bool {
 }
 
 // doDownload is a dispatcher for different download types
-func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
 	if strings.HasPrefix(info.DownloadURL, "s3://") {
 		return info.downloadFromS3(output, options)
 	}
@@ -731,7 +732,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 		return info.downloadS5cmdManifest(output, options)
 	}
 	if info.DRSURI != "" {
-		return info.downloadFromGen3(output, httpClient, options)
+		return info.downloadFromGen3(output, httpClient, gen3Auth, options)
 	}
 	if info.DownloadURL != "" {
 		return info.downloadDirect(output, httpClient)
@@ -770,7 +771,7 @@ func (info *FileInfo) downloadFromS3(output string, options *Options) error {
 }
 
 // downloadFromGen3 downloads a file from a Gen3 server
-func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, options *Options) error {
+func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, gen3Auth *Gen3AuthManager, options *Options) error {
 	logger.Debugf("Downloading from Gen3 DRS URI: %s", info.DRSURI)
 
 	// Parse DRS URI
@@ -783,7 +784,7 @@ func (info *FileInfo) downloadFromGen3(output string, httpClient *http.Client, o
 
 	// Get download URL from Gen3
 	objectID = url.PathEscape(objectID)
-	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, options.Auth)
+	downloadURL, err := getGen3DownloadURL(httpClient, commonsURL, objectID, gen3Auth)
 	if err != nil {
 		return fmt.Errorf("failed to get download URL from Gen3: %v", err)
 	}
@@ -798,8 +799,111 @@ type AccessMethod struct {
 	Type     string `json:"type"`
 }
 
+// Gen3AuthManager handles fetching and caching of Gen3 access tokens.
+type Gen3AuthManager struct {
+	client *http.Client
+	apiKey string
+	tokens map[string]string // Cache: host -> access token
+	mu     sync.Mutex
+}
+
+// NewGen3AuthManager creates a new Gen3AuthManager.
+func NewGen3AuthManager(client *http.Client, authFile string) (*Gen3AuthManager, error) {
+	if authFile == "" {
+		// No auth file provided, return a manager that can't authenticate.
+		return &Gen3AuthManager{}, nil
+	}
+
+	keyData, err := os.ReadFile(authFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read API key file: %v", err)
+	}
+
+	var apiKeyData struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := json.Unmarshal(keyData, &apiKeyData); err != nil {
+		return nil, fmt.Errorf("failed to parse API key from JSON: %v", err)
+	}
+
+	if apiKeyData.APIKey == "" {
+		return nil, fmt.Errorf("'api_key' not found in JSON key file")
+	}
+
+	return &Gen3AuthManager{
+		client: client,
+		apiKey: strings.TrimSpace(apiKeyData.APIKey),
+		tokens: make(map[string]string),
+	}, nil
+}
+
+// GetAccessToken retrieves a token for a given Gen3 host, using the cache if possible.
+func (m *Gen3AuthManager) GetAccessToken(commonsURL string) (string, error) {
+	if m.apiKey == "" {
+		return "", fmt.Errorf("Gen3 authentication requires an API key, but none was provided")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check cache first
+	if token, found := m.tokens[commonsURL]; found {
+		logger.Debugf("Using cached Gen3 access token for %s", commonsURL)
+		return token, nil
+	}
+
+	// Not in cache, fetch new token
+	logger.Infof("Fetching new Gen3 access token for %s", commonsURL)
+	token, err := getGen3AccessToken(m.client, commonsURL, m.apiKey)
+	if err != nil {
+		return "", err
+	}
+
+	// Store in cache
+	m.tokens[commonsURL] = token
+	return token, nil
+}
+
+// getGen3AccessToken retrieves an access token from Gen3 using an API key
+func getGen3AccessToken(client *http.Client, commonsURL, apiKey string) (string, error) {
+	apiEndpoint := fmt.Sprintf("https://%s/user/credentials/api/access_token", commonsURL)
+	apiKeyJSON, err := json.Marshal(map[string]string{"api_key": apiKey})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal API key: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", apiEndpoint, bytes.NewBuffer(apiKeyJSON))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request for access token: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to make request for access token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Gen3 access token endpoint returned status %s", resp.Status)
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode access token response: %v", err)
+	}
+
+	accessToken, ok := result["access_token"]
+	if !ok {
+		return "", fmt.Errorf("no 'access_token' found in Gen3 response")
+	}
+
+	logger.Infof("Successfully retrieved Gen3 access token: %s", accessToken)
+	return accessToken, nil
+}
+
 // getGen3DownloadURL retrieves the download URL from a Gen3 server
-func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile string) (string, error) {
+func getGen3DownloadURL(client *http.Client, commonsURL, objectID string, gen3Auth *Gen3AuthManager) (string, error) {
 	apiEndpoint := fmt.Sprintf("https://%s/user/data/download/%s", commonsURL, objectID)
 
 	req, err := http.NewRequest("GET", apiEndpoint, nil)
@@ -807,23 +911,13 @@ func getGen3DownloadURL(client *http.Client, commonsURL, objectID, authFile stri
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
 
-	if authFile != "" {
-		keyData, err := os.ReadFile(authFile)
+	// If a manager is configured and has an API key, get and use a token.
+	if gen3Auth != nil && gen3Auth.apiKey != "" {
+		accessToken, err := gen3Auth.GetAccessToken(commonsURL)
 		if err != nil {
-			return "", fmt.Errorf("failed to read API key file: %v", err)
+			return "", fmt.Errorf("failed to get access token for %s: %v", commonsURL, err)
 		}
-
-		var apiKey struct {
-			APIKey string `json:"api_key"`
-		}
-		if err := json.Unmarshal(keyData, &apiKey); err != nil {
-			return "", fmt.Errorf("failed to parse API key from JSON: %v", err)
-		}
-
-		if apiKey.APIKey == "" {
-			return "", fmt.Errorf("'api_key' not found in JSON key file")
-		}
-		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(apiKey.APIKey)))
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 	}
 
 	// Log the request for debugging
