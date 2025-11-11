@@ -158,7 +158,7 @@ func saveMetadataToCache(info *FileInfo, cachePath string) error {
 }
 
 // FetchMetadataForSeriesUIDs fetches metadata for a list of series UIDs in parallel
-func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, authToken *Token, options *Options) ([]*FileInfo, error) {
+func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, options *Options) ([]*FileInfo, error) {
 	fmt.Printf("Found %d series to fetch metadata for\n", len(seriesIDs))
 
 	// Initialize metadata stats
@@ -219,15 +219,6 @@ func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, aut
 					metaStats.updateProgress("failed", seriesID)
 					continue
 				}
-
-				// Get current access token
-				accessToken, err := authToken.GetAccessToken()
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to get access token: %v", workerID, err)
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-				req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 
 				// Set timeout for metadata request
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -327,7 +318,7 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 		logger.Errorf("error reading tcia file: %v", err)
 	}
 
-	return FetchMetadataForSeriesUIDs(seriesIDs, httpClient, authToken, options)
+	return FetchMetadataForSeriesUIDs(seriesIDs, httpClient, options)
 }
 
 type FileInfo struct {
@@ -665,16 +656,16 @@ func (info *FileInfo) GetMeta(output string) error {
 }
 
 // Download is real function to download file with retry logic
-func (info *FileInfo) Download(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
+func (info *FileInfo) Download(output string, httpClient *http.Client, gen3Auth *Gen3AuthManager, options *Options) error {
 	// Add rate limiting delay between requests
 	if options.RequestDelay > 0 {
 		time.Sleep(options.RequestDelay)
 	}
-	return info.DownloadWithRetry(output, httpClient, authToken, gen3Auth, options)
+	return info.DownloadWithRetry(output, httpClient, gen3Auth, options)
 }
 
 // DownloadWithRetry downloads file with retry logic and exponential backoff
-func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
+func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, gen3Auth *Gen3AuthManager, options *Options) error {
 	var lastErr error
 	delay := options.RetryDelay
 
@@ -685,7 +676,7 @@ func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, 
 			delay *= 2 // Exponential backoff
 		}
 
-		err := info.doDownload(output, httpClient, authToken, gen3Auth, options)
+		err := info.doDownload(output, httpClient, gen3Auth, options)
 		if err == nil {
 			return nil
 		}
@@ -728,7 +719,7 @@ func isRetryableError(err error) bool {
 }
 
 // doDownload is a dispatcher for different download types
-func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, gen3Auth *Gen3AuthManager, options *Options) error {
+func (info *FileInfo) doDownload(output string, httpClient *http.Client, gen3Auth *Gen3AuthManager, options *Options) error {
 	// For s5cmd manifest downloads, S5cmdManifestPath is set to the temporary series directory
 	if info.S5cmdManifestPath != "" {
 		return info.downloadFromS3(info.S5cmdManifestPath, options)
@@ -743,7 +734,7 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 	if info.DownloadURL != "" {
 		return info.downloadDirect(output, httpClient)
 	}
-	return info.downloadFromTCIA(output, httpClient, authToken, options)
+	return info.downloadFromTCIA(output, httpClient, options)
 }
 
 // downloadFromS3 downloads a file (or files, using a wildcard) from S3 using the s5cmd command-line tool.
@@ -1043,7 +1034,7 @@ func (info *FileInfo) downloadDirect(output string, httpClient *http.Client) err
 }
 
 // downloadFromTCIA performs the actual download from TCIA, with decompression
-func (info *FileInfo) downloadFromTCIA(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+func (info *FileInfo) downloadFromTCIA(output string, httpClient *http.Client, options *Options) error {
 	logger.Debugf("getting image file to %s", output)
 
 	url_, err := makeURL(ImageUrl, map[string]interface{}{"SeriesInstanceUID": info.SeriesUID})
@@ -1084,13 +1075,6 @@ func (info *FileInfo) downloadFromTCIA(output string, httpClient *http.Client, a
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
-
-	// Get current access token
-	accessToken, err := authToken.GetAccessToken()
-	if err != nil {
-		return fmt.Errorf("failed to get access token: %v", err)
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 
 	// Set timeout based on file size (if known)
 	var timeout time.Duration

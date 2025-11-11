@@ -1,52 +1,80 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
-// doRequest performs an HTTP request with automatic v2 -> v1 fallback
-// This provides a graceful degradation when v2 endpoints are unavailable
+const (
+	// BaseUrl is the base URL for the NBIA API
+	BaseUrl = "https://nbia.cancerimagingarchive.net/nbia-api/services/v4"
+	// ImageUrl is the URL for downloading images
+	ImageUrl = BaseUrl + "/getImage"
+	// MetaUrl is the URL for fetching metadata
+	MetaUrl = BaseUrl + "/getSeries"
+	// SeriesMetadataUrl is the URL for fetching series metadata
+	SeriesMetadataUrl = BaseUrl + "/getSeriesMetadata"
+)
+
+// makeURL constructs a URL with query parameters
+func makeURL(base string, params map[string]interface{}) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	for k, v := range params {
+		q.Set(k, fmt.Sprintf("%v", v))
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// doRequest performs an HTTP request and returns the response
 func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
-	// Save original URL for potential fallback
-	originalURL := req.URL.String()
-
-	// Try the request as-is
 	resp, err := client.Do(req)
-
-	// If successful or not a v2 endpoint, return as-is
-	if err != nil || !strings.Contains(originalURL, "/v2/") {
-		return resp, err
+	if err != nil {
+		return nil, err
 	}
-
-	// Check if we should fallback to v1
-	// Fallback on: 404 (endpoint not found), 500-504 (server errors), 502 (bad gateway)
-	if resp.StatusCode == 404 || (resp.StatusCode >= 500 && resp.StatusCode <= 504) {
-		logger.Warnf("v2 endpoint returned %d, falling back to v1: %s", resp.StatusCode, originalURL)
-		resp.Body.Close()
-
-		// Create v1 URL
-		v1URL := strings.Replace(originalURL, "/v2/", "/v1/", 1)
-
-		// Create new request with v1 URL
-		v1Req, err := http.NewRequest(req.Method, v1URL, req.Body)
-		if err != nil {
-			return nil, err
-		}
-
-		// Copy headers
-		v1Req.Header = req.Header.Clone()
-
-		// Copy context if present
-		if req.Context() != nil {
-			v1Req = v1Req.WithContext(req.Context())
-		}
-
-		// Try v1 endpoint
-		logger.Infof("Attempting v1 endpoint: %s", v1URL)
-		return client.Do(v1Req)
-	}
-
-	// Return original response for other status codes
 	return resp, nil
+}
+
+// FetchSeriesMetadataCSV fetches series metadata as a CSV file
+func FetchSeriesMetadataCSV(seriesUIDs []string, client *http.Client) ([]byte, error) {
+	// Prepare the request body
+	data := url.Values{}
+	data.Set("list", strings.Join(seriesUIDs, ","))
+	data.Set("format", "csv")
+
+	req, err := http.NewRequest("POST", SeriesMetadataUrl, bytes.NewBufferString(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metadata request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Accept", "text/csv")
+
+	// Perform the request
+	resp, err := doRequest(client, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to perform metadata request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("metadata request failed with status: %s", resp.Status)
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata response: %w", err)
+	}
+
+	return body, nil
 }

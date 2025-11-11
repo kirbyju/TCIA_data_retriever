@@ -10,8 +10,6 @@ import (
 
 var (
 	TokenUrl = "https://services.cancerimagingarchive.net/nbia-api/oauth/token"
-	ImageUrl = "https://services.cancerimagingarchive.net/nbia-api/services/v2/getImage"
-	MetaUrl  = "https://services.cancerimagingarchive.net/nbia-api/services/v2/getSeriesMetaData"
 )
 
 // Options command line parameters
@@ -26,9 +24,7 @@ type Options struct {
 	Version         bool
 	Debug           bool
 	Help            bool
-	MetaUrl         string
 	TokenUrl        string
-	ImageUrl        string
 	SaveLog         bool
 	Prompt          bool
 	Force           bool
@@ -84,10 +80,6 @@ func InitOptions() *Options {
 		opt.opt.Description("set password for control data in command line"))
 	opt.opt.StringVar(&opt.TokenUrl, "token-url", TokenUrl,
 		opt.opt.Description("the api url of login token"))
-	opt.opt.StringVar(&opt.MetaUrl, "meta-url", MetaUrl,
-		opt.opt.Description("the api url get meta data"))
-	opt.opt.StringVar(&opt.ImageUrl, "image-url", ImageUrl,
-		opt.opt.Description("the api url to download image data"))
 	opt.opt.BoolVar(&opt.Force, "force", false, opt.opt.Alias("f"),
 		opt.opt.Description("force re-download even if files exist"))
 	opt.opt.BoolVar(&opt.SkipExisting, "skip-existing", false,
@@ -142,23 +134,6 @@ func InitOptions() *Options {
 		TokenUrl = opt.TokenUrl
 		logger.Infof("Using custom token url: %s", TokenUrl)
 	}
-
-	if opt.MetaUrl != "" && opt.MetaUrl != MetaUrl {
-		MetaUrl = opt.MetaUrl
-		logger.Infof("Using custom meta url: %s", MetaUrl)
-	}
-
-	// Set ImageUrl based on MD5 flag if not manually specified
-	if opt.ImageUrl != ImageUrl && opt.ImageUrl != "" {
-		// User specified a custom URL
-		ImageUrl = opt.ImageUrl
-		logger.Infof("Using custom image url: %s", ImageUrl)
-	} else if !opt.NoMD5 {
-		// Try v2 API first for MD5 support (will fallback to v1 if needed)
-		ImageUrl = "https://services.cancerimagingarchive.net/nbia-api/services/v2/getImageWithMD5Hash"
-		logger.Infof("Using MD5 validation endpoint (v2 with v1 fallback)")
-	}
-	// else use default ImageUrl (v2 getImage)
 
 	if opt.Prompt {
 		logger.Infof("Please input password for %s: ", opt.Username)
