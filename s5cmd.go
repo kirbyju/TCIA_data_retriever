@@ -64,6 +64,13 @@ func expandS5cmdURI(s3uri string) ([]string, error) {
 		return []string{s3uri}, nil
 	}
 
+	// Extract bucket name to reconstruct the full URI later
+	uriParts := strings.SplitN(strings.TrimPrefix(s3uri, "s3://"), "/", 2)
+	if len(uriParts) < 1 {
+		return nil, fmt.Errorf("invalid s3 uri for bucket extraction: %s", s3uri)
+	}
+	bucket := uriParts[0]
+
 	cmd := exec.Command("s5cmd", "--no-sign-request", "--endpoint-url", "https://s3.amazonaws.com", "ls", s3uri)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -77,8 +84,10 @@ func expandS5cmdURI(s3uri string) ([]string, error) {
 		line := scanner.Text()
 		parts := strings.Fields(line)
 		if len(parts) >= 4 { // s5cmd ls output has at least 4 fields
+			// The object key starts from the 4th field to the end
+			objectKey := strings.Join(parts[3:], " ")
 			// Reconstruct the full s3:// URI
-			fullURI := "s3://" + strings.Join(parts[3:], " ")
+			fullURI := fmt.Sprintf("s3://%s/%s", bucket, objectKey)
 			expandedFiles = append(expandedFiles, fullURI)
 		}
 	}
