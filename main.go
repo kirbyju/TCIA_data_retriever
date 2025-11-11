@@ -61,29 +61,34 @@ func setupCloseHandler() {
 }
 
 // decodeInputFile determines the input file type and calls the appropriate decoder
-func decodeInputFile(filePath string, client *http.Client, token *Token, options *Options) ([]*FileInfo, error) {
+func decodeInputFile(filePath string, client *http.Client, token *Token, options *Options, s5cmdMap map[string]string) ([]*FileInfo, int) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".tcia":
-		return decodeTCIA(filePath, client, token, options), nil
+		return decodeTCIA(filePath, client, token, options), 0
 	case ".s5cmd":
-		return decodeS5cmd(filePath, options.Output)
+		return decodeS5cmd(filePath, options.Output, s5cmdMap)
 	case ".csv", ".tsv", ".xlsx":
 		// Try to decode as a SeriesInstanceUID spreadsheet first
 		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
 		if err == nil {
 			// Success, handle like a TCIA manifest
-			return FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options), nil
+			return FetchMetadataForSeriesUIDs(seriesUIDs, client, token, options), 0
 		} else if err != ErrSeriesUIDColumnNotFound {
 			// A real error occurred
-			return nil, fmt.Errorf("could not get series UIDs from spreadsheet: %w", err)
+			logger.Fatalf("could not get series UIDs from spreadsheet: %v", err)
 		}
 
 		// Fallback to regular spreadsheet handling
-		return decodeSpreadsheet(filePath)
+		files, err := decodeSpreadsheet(filePath)
+		if err != nil {
+			logger.Fatalf("could not decode spreadsheet: %v", err)
+		}
+		return files, 0
 	default:
-		return nil, fmt.Errorf("unsupported input file format: %s", ext)
+		logger.Fatalf("unsupported input file format: %s", ext)
 	}
+	return nil, 0
 }
 
 // updateProgress prints the current download progress
@@ -160,30 +165,22 @@ func main() {
 			logger.Fatalf("Failed to create metadata directory: %v", err)
 		}
 
-		var wg sync.WaitGroup
-		files, err := decodeInputFile(options.Input, client, token, options)
+		// Load the s5cmd series map
+		s5cmdMap, err := loadS5cmdSeriesMap(options.Output)
 		if err != nil {
-			logger.Fatalf("Failed to decode input file: %v", err)
+			logger.Fatalf("Failed to load s5cmd series map: %v", err)
 		}
+
+		var wg sync.WaitGroup
+		files, newS5cmdJobs := decodeInputFile(options.Input, client, token, options, s5cmdMap)
 
 		// If input is a spreadsheet, copy it to the metadata folder
 		ext := strings.ToLower(filepath.Ext(options.Input))
 		if ext == ".csv" || ext == ".tsv" || ext == ".xlsx" {
 			metaDir := filepath.Join(options.Output, "metadata")
-			if err := os.MkdirAll(metaDir, 0755); err != nil {
-				logger.Fatalf("Failed to create metadata directory: %v", err)
-			}
 			destPath := filepath.Join(metaDir, filepath.Base(options.Input))
 			if err := copyFile(options.Input, destPath); err != nil {
 				logger.Warnf("Failed to copy spreadsheet to metadata folder: %v", err)
-			}
-		}
-
-		// Separate s5cmd series from other files for post-processing
-		var s5cmdSeries []*FileInfo
-		for _, f := range files {
-			if f.S5cmdManifestPath != "" {
-				s5cmdSeries = append(s5cmdSeries, f)
 			}
 		}
 
@@ -270,11 +267,11 @@ func main() {
 		wg.Wait()
 
 		// Post-processing for s5cmd series
-		if len(s5cmdSeries) > 0 {
+		if newS5cmdJobs > 0 {
 			fmt.Println("\nOrganizing s5cmd downloaded series...")
-			for _, seriesInfo := range s5cmdSeries {
-				// Skip post-processing for sync jobs as the directory is already final
-				if seriesInfo.IsSyncJob {
+			for _, seriesInfo := range files {
+				// Skip post-processing for sync jobs and non-s5cmd files
+				if seriesInfo.IsSyncJob || seriesInfo.S5cmdManifestPath == "" {
 					continue
 				}
 
@@ -305,9 +302,9 @@ func main() {
 					continue
 				}
 
-				updateS5cmdSeriesMap(seriesInfo.OriginalS5cmdURI, seriesUID)
+				s5cmdMap[seriesInfo.OriginalS5cmdURI] = seriesUID
 			}
-			if err := saveS5cmdSeriesMap(options.Output); err != nil {
+			if err := saveS5cmdSeriesMap(options.Output, s5cmdMap); err != nil {
 				logger.Errorf("Failed to save s5cmd series map: %v", err)
 			}
 			fmt.Println("s5cmd series organization complete.")

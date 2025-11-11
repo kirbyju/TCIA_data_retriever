@@ -7,19 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
-// s5cmdSeriesMap stores the mapping from original S3 URI to SeriesInstanceUID
-var s5cmdSeriesMap = make(map[string]string)
-var s5cmdSeriesMapMutex sync.Mutex
-
-// loadS5cmdSeriesMap loads the mapping file from the output directory
+// loadS5cmdSeriesMap loads the mapping file from the output directory.
 func loadS5cmdSeriesMap(outputDir string) (map[string]string, error) {
-	mapFilePath := filepath.Join(outputDir, ".s5cmd_series_map.json")
-	s5cmdSeriesMapMutex.Lock()
-	defer s5cmdSeriesMapMutex.Unlock()
-
+	mapFilePath := filepath.Join(outputDir, "metadata", "s5cmd_series_map.json")
 	if _, err := os.Stat(mapFilePath); os.IsNotExist(err) {
 		return make(map[string]string), nil // Return empty map if file doesn't exist
 	}
@@ -29,19 +21,17 @@ func loadS5cmdSeriesMap(outputDir string) (map[string]string, error) {
 		return nil, fmt.Errorf("could not read s5cmd series map: %w", err)
 	}
 
-	if err := json.Unmarshal(data, &s5cmdSeriesMap); err != nil {
+	var seriesMap map[string]string
+	if err := json.Unmarshal(data, &seriesMap); err != nil {
 		return nil, fmt.Errorf("could not parse s5cmd series map: %w", err)
 	}
-	return s5cmdSeriesMap, nil
+	return seriesMap, nil
 }
 
-// saveS5cmdSeriesMap saves the mapping file to the output directory
-func saveS5cmdSeriesMap(outputDir string) error {
-	mapFilePath := filepath.Join(outputDir, ".s5cmd_series_map.json")
-	s5cmdSeriesMapMutex.Lock()
-	defer s5cmdSeriesMapMutex.Unlock()
-
-	data, err := json.MarshalIndent(s5cmdSeriesMap, "", "  ")
+// saveS5cmdSeriesMap saves the mapping file to the output directory.
+func saveS5cmdSeriesMap(outputDir string, seriesMap map[string]string) error {
+	mapFilePath := filepath.Join(outputDir, "metadata", "s5cmd_series_map.json")
+	data, err := json.MarshalIndent(seriesMap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("could not marshal s5cmd series map: %w", err)
 	}
@@ -49,27 +39,15 @@ func saveS5cmdSeriesMap(outputDir string) error {
 	return os.WriteFile(mapFilePath, data, 0644)
 }
 
-// updateS5cmdSeriesMap adds a new entry to the map
-func updateS5cmdSeriesMap(originalURI, seriesUID string) {
-	s5cmdSeriesMapMutex.Lock()
-	defer s5cmdSeriesMapMutex.Unlock()
-	s5cmdSeriesMap[originalURI] = seriesUID
-}
-
-func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
+func decodeS5cmd(filePath string, outputDir string, processedSeries map[string]string) ([]*FileInfo, int) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("could not open s5cmd manifest: %w", err)
+		logger.Fatalf("could not open s5cmd manifest: %v", err)
 	}
 	defer file.Close()
 
-	// Load the series map to differentiate between new downloads and sync jobs
-	processedSeries, err := loadS5cmdSeriesMap(outputDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load s5cmd series map: %w", err)
-	}
-
 	var jobsToProcess []*FileInfo
+	var newJobs int
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -96,6 +74,7 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 			})
 		} else {
 			// This is a new copy job
+			newJobs++
 			logger.Infof("Queueing new copy job for series: %s", originalURI)
 			cleanURI := strings.TrimSuffix(originalURI, "/*")
 			seriesGUID := filepath.Base(cleanURI)
@@ -118,9 +97,9 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading s5cmd manifest: %w", err)
+		logger.Fatalf("error reading s5cmd manifest: %v", err)
 	}
 
-	logger.Infof("Found %d s5cmd jobs to process (%d new, %d existing)", len(jobsToProcess), len(jobsToProcess)-len(processedSeries), len(processedSeries))
-	return jobsToProcess, nil
+	logger.Infof("Found %d s5cmd jobs to process (%d new, %d existing)", len(jobsToProcess), newJobs, len(jobsToProcess)-newJobs)
+	return jobsToProcess, newJobs
 }
