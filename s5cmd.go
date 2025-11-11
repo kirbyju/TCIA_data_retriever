@@ -64,7 +64,7 @@ func expandS5cmdURI(s3uri string) ([]string, error) {
 		return []string{s3uri}, nil
 	}
 
-	// Extract bucket name to construct the full URI
+	// Extract bucket name to construct the full URI if the key is not already a full URI
 	uriParts := strings.SplitN(strings.TrimPrefix(s3uri, "s3://"), "/", 2)
 	if len(uriParts) < 1 {
 		return nil, fmt.Errorf("invalid s3 uri for bucket extraction: %s", s3uri)
@@ -95,7 +95,14 @@ func expandS5cmdURI(s3uri string) ([]string, error) {
 		}
 
 		if lsObject.Key != "" {
-			fullURI := fmt.Sprintf("s3://%s/%s", bucket, lsObject.Key)
+			var fullURI string
+			// Defensive check: if the key is already a full URI, use it directly.
+			// Otherwise, construct it from the bucket and the key.
+			if strings.HasPrefix(lsObject.Key, "s3://") {
+				fullURI = lsObject.Key
+			} else {
+				fullURI = fmt.Sprintf("s3://%s/%s", bucket, lsObject.Key)
+			}
 			expandedFiles = append(expandedFiles, fullURI)
 		}
 	}
