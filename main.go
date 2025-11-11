@@ -39,11 +39,12 @@ type DownloadStats struct {
 
 // WorkerContext contains all dependencies for workers
 type WorkerContext struct {
-	HTTPClient *http.Client
-	AuthToken  *Token
-	Options    *Options
-	Stats      *DownloadStats
-	WorkerID   int
+	HTTPClient    *http.Client
+	AuthToken     *Token
+	Gen3Auth      *Gen3AuthManager
+	Options       *Options
+	Stats         *DownloadStats
+	WorkerID      int
 }
 
 // SetupCloseHandler creates a 'listener' on a new goroutine which will notify the
@@ -199,11 +200,18 @@ func main() {
 		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
 		dicomFileChan := make(chan string, len(files)) // Channel to collect downloaded DICOM file paths
 
+		// Create Gen3 Auth Manager
+		gen3Auth, err := NewGen3AuthManager(client, options.Auth)
+		if err != nil {
+			logger.Fatalf("Failed to initialize Gen3 auth manager: %v", err)
+		}
+
 		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
 			ctx := &WorkerContext{
 				HTTPClient: client,
 				AuthToken:  token,
+				Gen3Auth:   gen3Auth,
 				Options:    options,
 				Stats:      stats,
 				WorkerID:   i + 1,
@@ -244,7 +252,7 @@ func main() {
 						}
 
 						if fileInfo.NeedsDownload(ctx.Options.Output, ctx.Options.Force, ctx.Options.NoDecompress) {
-							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Options); err != nil {
+							if err := fileInfo.Download(ctx.Options.Output, ctx.HTTPClient, ctx.AuthToken, ctx.Gen3Auth, ctx.Options); err != nil {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
