@@ -157,146 +157,8 @@ func saveMetadataToCache(info *FileInfo, cachePath string) error {
 	return os.Rename(tempFile, cachePath)
 }
 
-// FetchMetadataForSeriesUIDs fetches metadata for a list of series UIDs in parallel
-func FetchMetadataForSeriesUIDs(seriesIDs []string, httpClient *http.Client, options *Options) ([]*FileInfo, error) {
-	fmt.Printf("Found %d series to fetch metadata for\n", len(seriesIDs))
-
-	// Initialize metadata stats
-	metaStats := &MetadataStats{
-		Total:     len(seriesIDs),
-		StartTime: time.Now(),
-	}
-
-	// Use parallel workers to fetch metadata
-	metadataWorkers := options.MetadataWorkers
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	results := make([]*FileInfo, 0)
-
-	// Create a channel for series IDs
-	idChan := make(chan string, len(seriesIDs))
-	for _, id := range seriesIDs {
-		idChan <- id
-	}
-	close(idChan)
-
-	// Start workers
-	wg.Add(metadataWorkers)
-	for i := 0; i < metadataWorkers; i++ {
-		go func(workerID int) {
-			defer wg.Done()
-
-			for seriesID := range idChan {
-				// Check cache first unless refresh is requested
-				cachePath := getMetadataCachePath(options.Output, seriesID)
-
-				if !options.RefreshMetadata {
-					// Try to load from cache
-					if cachedInfo, err := loadMetadataFromCache(cachePath); err == nil {
-						logger.Debugf("[Meta Worker %d] Loaded metadata from cache for: %s", workerID, seriesID)
-						mu.Lock()
-						results = append(results, cachedInfo)
-						mu.Unlock()
-						metaStats.updateProgress("cached", seriesID)
-						continue
-					}
-					// Cache miss or error, fetch from API
-					logger.Debugf("[Meta Worker %d] Cache miss, fetching metadata for: %s", workerID, seriesID)
-				} else {
-					logger.Debugf("[Meta Worker %d] Force refresh, fetching metadata for: %s", workerID, seriesID)
-				}
-
-				url_, err := makeURL(MetaUrl, map[string]interface{}{"SeriesInstanceUID": seriesID})
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to make URL: %v", workerID, err)
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				req, err := http.NewRequest("GET", url_, nil)
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to create request: %v", workerID, err)
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				// Set timeout for metadata request
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				req = req.WithContext(ctx)
-
-				resp, err := doRequest(httpClient, req)
-				cancel() // Cancel context after request
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to do request: %v", workerID, err)
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				// Check for authentication errors
-				if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-					logger.Errorf("[Meta Worker %d] Authentication failed for series %s (status: %s). Please check your credentials and ensure you have access to this restricted series.", workerID, seriesID, resp.Status)
-					_ = resp.Body.Close()
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				content, err := io.ReadAll(resp.Body)
-				_ = resp.Body.Close()
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to read response data: %v", workerID, err)
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				var files []*FileInfo
-				// The API sometimes returns a single object instead of an array for a single series.
-				// We need to handle both cases.
-				if len(content) > 0 && content[0] == '[' {
-					err = json.Unmarshal(content, &files)
-				} else if len(content) > 0 {
-					var file FileInfo
-					err = json.Unmarshal(content, &file)
-					if err == nil {
-						files = []*FileInfo{&file}
-					}
-				}
-
-				if err != nil {
-					logger.Errorf("[Meta Worker %d] Failed to parse response data: %v", workerID, err)
-					logger.Debugf("%s", string(content))
-					metaStats.updateProgress("failed", seriesID)
-					continue
-				}
-
-				// Save to cache - usually one file per series
-				for _, file := range files {
-					if file.SeriesUID != "" {
-						if err := saveMetadataToCache(file, getMetadataCachePath(options.Output, file.SeriesUID)); err != nil {
-							logger.Warnf("[Meta Worker %d] Failed to cache metadata for %s: %v", workerID, file.SeriesUID, err)
-						}
-					}
-				}
-
-				// Thread-safe append to results
-				mu.Lock()
-				results = append(results, files...)
-				mu.Unlock()
-
-				// Mark as successfully fetched
-				metaStats.updateProgress("fetched", seriesID)
-			}
-		}(i + 1)
-	}
-
-	// Wait for all workers to finish
-	wg.Wait()
-
-	fmt.Printf("Successfully fetched metadata for %d files\n", len(results))
-	return results, nil
-}
-
 // decodeTCIA is used to decode the tcia file with parallel metadata fetching
-func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options *Options) ([]*FileInfo, error) {
+func decodeTCIA(path string, httpClient *http.Client, options *Options) ([]*FileInfo, error) {
 	logger.Debugf("decoding tcia file: %s", path)
 
 	f, err := os.Open(path)
@@ -318,7 +180,19 @@ func decodeTCIA(path string, httpClient *http.Client, authToken *Token, options 
 		logger.Errorf("error reading tcia file: %v", err)
 	}
 
-	return FetchMetadataForSeriesUIDs(seriesIDs, httpClient, options)
+	// Fetch metadata
+	csvData, err := FetchSeriesMetadataCSV(seriesIDs, httpClient)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse CSV data
+	var fileInfo []*FileInfo
+	if err := Unmarshal(bytes.NewReader(csvData), &fileInfo); err != nil {
+		return nil, err
+	}
+
+	return fileInfo, nil
 }
 
 type FileInfo struct {

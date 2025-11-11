@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go.uber.org/zap"
 	"net/http"
@@ -66,7 +67,7 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".tcia":
-		files, err := decodeTCIA(filePath, client, token, options)
+		files, err := decodeTCIA(filePath, client, options)
 		return files, 0, err
 	case ".s5cmd":
 		files, newJobs := decodeS5cmd(filePath, options.Output, s5cmdMap)
@@ -76,8 +77,15 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
 		if err == nil {
 			// Success, handle like a TCIA manifest
-			files, err := FetchMetadataForSeriesUIDs(seriesUIDs, client, options)
-			return files, 0, err
+			csvData, err := FetchSeriesMetadataCSV(seriesUIDs, client)
+			if err != nil {
+				return nil, 0, err
+			}
+			var fileInfo []*FileInfo
+			if err := Unmarshal(bytes.NewReader(csvData), &fileInfo); err != nil {
+				return nil, 0, err
+			}
+			return fileInfo, 0, nil
 		} else if err != ErrSeriesUIDColumnNotFound {
 			// A real error occurred
 			return nil, 0, fmt.Errorf("could not get series UIDs from spreadsheet: %w", err)

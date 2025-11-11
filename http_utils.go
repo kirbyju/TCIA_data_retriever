@@ -14,8 +14,6 @@ const (
 	BaseUrl = "https://nbia.cancerimagingarchive.net/nbia-api/services/v4"
 	// ImageUrl is the URL for downloading images
 	ImageUrl = BaseUrl + "/getImage"
-	// MetaUrl is the URL for fetching metadata
-	MetaUrl = BaseUrl + "/getSeries"
 	// SeriesMetadataUrl is the URL for fetching series metadata
 	SeriesMetadataUrl = BaseUrl + "/getSeriesMetadata"
 )
