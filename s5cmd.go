@@ -58,39 +58,51 @@ func updateS5cmdSeriesMap(originalURI, seriesUID string) {
 	s5cmdSeriesMap[originalURI] = seriesUID
 }
 
-// expandS5cmdURI expands a wildcard URI using "s5cmd ls"
+// expandS5cmdURI expands a wildcard URI using "s5cmd ls --json"
 func expandS5cmdURI(s3uri string) ([]string, error) {
 	if !strings.Contains(s3uri, "*") {
 		return []string{s3uri}, nil
 	}
 
-	// Extract bucket name to reconstruct the full URI later
+	// Extract bucket name to construct the full URI
 	uriParts := strings.SplitN(strings.TrimPrefix(s3uri, "s3://"), "/", 2)
 	if len(uriParts) < 1 {
 		return nil, fmt.Errorf("invalid s3 uri for bucket extraction: %s", s3uri)
 	}
 	bucket := uriParts[0]
 
-	cmd := exec.Command("s5cmd", "--no-sign-request", "--endpoint-url", "https://s3.amazonaws.com", "ls", s3uri)
+	cmd := exec.Command("s5cmd", "--json", "--no-sign-request", "--endpoint-url", "https://s3.amazonaws.com", "ls", s3uri)
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("s5cmd ls failed for %s: %v", s3uri, err)
+		return nil, fmt.Errorf("s5cmd ls --json failed for %s: %v\nStderr: %s", s3uri, err, stderr.String())
+	}
+
+	type S5cmdLsObject struct {
+		Key string `json:"key"`
 	}
 
 	var expandedFiles []string
 	scanner := bufio.NewScanner(&out)
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) >= 4 { // s5cmd ls output has at least 4 fields
-			// The object key starts from the 4th field to the end
-			objectKey := strings.Join(parts[3:], " ")
-			// Reconstruct the full s3:// URI
-			fullURI := fmt.Sprintf("s3://%s/%s", bucket, objectKey)
+		var lsObject S5cmdLsObject
+		if err := json.Unmarshal([]byte(line), &lsObject); err != nil {
+			logger.Warnf("Could not parse JSON line from s5cmd ls output: %v", err)
+			continue
+		}
+
+		if lsObject.Key != "" {
+			fullURI := fmt.Sprintf("s3://%s/%s", bucket, lsObject.Key)
 			expandedFiles = append(expandedFiles, fullURI)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading s5cmd ls --json output: %w", err)
+	}
+
 	return expandedFiles, nil
 }
 
