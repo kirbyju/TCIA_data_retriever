@@ -748,6 +748,11 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 
 // downloadFromS3 downloads a file (or files, using a wildcard) from S3 using the s5cmd command-line tool.
 func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
+	// Ensure the target directory exists, especially for sync jobs where the dir might have been deleted.
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("could not create target directory %s: %w", targetDir, err)
+	}
+
 	var cmd *exec.Cmd
 	if info.IsSyncJob {
 		logger.Debugf("Syncing from S3: %s to %s", info.DownloadURL, targetDir)
