@@ -353,6 +353,7 @@ type FileInfo struct {
 	DRSURI             string `json:"drs_uri,omitempty"`
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
+	OriginalS5cmdURI   string `json:"original_s5cmd_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
