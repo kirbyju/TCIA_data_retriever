@@ -63,13 +63,13 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 	}
 	defer file.Close()
 
-	// Load the series map to skip already processed URIs
-	processedURIs, err := loadS5cmdSeriesMap(outputDir)
+	// Load the series map to differentiate between new downloads and sync jobs
+	processedSeries, err := loadS5cmdSeriesMap(outputDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load s5cmd series map: %w", err)
 	}
 
-	var seriesToDownload []*FileInfo
+	var jobsToProcess []*FileInfo
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -83,37 +83,44 @@ func decodeS5cmd(filePath string, outputDir string) ([]*FileInfo, error) {
 			continue // Skip comments and invalid lines
 		}
 
-		// Check if this URI has already been processed
-		if _, ok := processedURIs[originalURI]; ok {
-			logger.Infof("Skipping already processed series: %s", originalURI)
-			continue
+		if seriesUID, ok := processedSeries[originalURI]; ok {
+			// This is a sync job for an existing series
+			logger.Infof("Queueing sync job for existing series: %s", originalURI)
+			finalDirPath := filepath.Join(outputDir, seriesUID)
+			jobsToProcess = append(jobsToProcess, &FileInfo{
+				DownloadURL:      originalURI,
+				SeriesUID:        seriesUID, // We already know the final UID
+				OriginalS5cmdURI: originalURI,
+				S5cmdManifestPath: finalDirPath, // The final directory is the target for sync
+				IsSyncJob:        true,
+			})
+		} else {
+			// This is a new copy job
+			logger.Infof("Queueing new copy job for series: %s", originalURI)
+			cleanURI := strings.TrimSuffix(originalURI, "/*")
+			seriesGUID := filepath.Base(cleanURI)
+			tempDirName := "s5cmd-tmp-" + seriesGUID
+			tempDirPath := filepath.Join(outputDir, tempDirName)
+
+			if err := os.MkdirAll(tempDirPath, 0755); err != nil {
+				logger.Warnf("Could not create temp directory for %s: %v", originalURI, err)
+				continue
+			}
+
+			jobsToProcess = append(jobsToProcess, &FileInfo{
+				DownloadURL:      originalURI,
+				SeriesUID:        filepath.Base(originalURI), // Temporary ID for progress
+				OriginalS5cmdURI: originalURI,
+				S5cmdManifestPath: tempDirPath, // The temporary directory is the target for copy
+				IsSyncJob:        false,
+			})
 		}
-
-		// Create a unique temporary directory for this series
-		// Robustly parse the unique series identifier from the URI
-		cleanURI := strings.TrimSuffix(originalURI, "/*")
-		seriesGUID := filepath.Base(cleanURI)
-		tempDirName := "s5cmd-" + seriesGUID
-		tempDirPath := filepath.Join(outputDir, tempDirName)
-
-		if err := os.MkdirAll(tempDirPath, 0755); err != nil {
-			logger.Warnf("Could not create temp directory for %s: %v", originalURI, err)
-			continue
-		}
-
-		// Create a single FileInfo object for the entire series download
-		seriesToDownload = append(seriesToDownload, &FileInfo{
-			DownloadURL:      originalURI,
-			SeriesUID:        filepath.Base(originalURI), // Use URI base as a temporary ID for progress tracking
-			OriginalS5cmdURI: originalURI,
-			S5cmdManifestPath: tempDirPath, // This field now holds the target directory for the series download
-		})
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading s5cmd manifest: %w", err)
 	}
 
-	logger.Infof("Found %d series to download from s5cmd manifest", len(seriesToDownload))
-	return seriesToDownload, nil
+	logger.Infof("Found %d s5cmd jobs to process (%d new, %d existing)", len(jobsToProcess), len(jobsToProcess)-len(processedSeries), len(processedSeries))
+	return jobsToProcess, nil
 }

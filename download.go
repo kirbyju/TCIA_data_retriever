@@ -354,6 +354,7 @@ type FileInfo struct {
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
 	OriginalS5cmdURI   string `json:"original_s5cmd_uri,omitempty"`
+	IsSyncJob          bool   `json:"is_sync_job,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -747,16 +748,28 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 
 // downloadFromS3 downloads a file (or files, using a wildcard) from S3 using the s5cmd command-line tool.
 func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
-	logger.Debugf("Downloading from S3: %s to %s", info.DownloadURL, targetDir)
+	var cmd *exec.Cmd
+	if info.IsSyncJob {
+		logger.Debugf("Syncing from S3: %s to %s", info.DownloadURL, targetDir)
+		cmd = exec.Command("s5cmd",
+			"--no-sign-request",
+			"--endpoint-url", "https://s3.amazonaws.com",
+			"sync",
+			"--size-only",
+			info.DownloadURL,
+			".",
+		)
+	} else {
+		logger.Debugf("Copying from S3: %s to %s", info.DownloadURL, targetDir)
+		cmd = exec.Command("s5cmd",
+			"--no-sign-request",
+			"--endpoint-url", "https://s3.amazonaws.com",
+			"cp",
+			info.DownloadURL,
+			".",
+		)
+	}
 
-	// Construct the s5cmd command to download a single file or a series with a wildcard
-	cmd := exec.Command("s5cmd",
-		"--no-sign-request",
-		"--endpoint-url", "https://s3.amazonaws.com",
-		"cp",
-		info.DownloadURL,
-		".", // Download to the current directory, which is set by cmd.Dir
-	)
 	cmd.Dir = targetDir // Run the command in the specified target directory
 
 	// Execute the command
@@ -766,9 +779,6 @@ func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
 	}
 
 	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
-
-	// Note: We no longer track individual filenames here. The post-processing
-	// step will list the directory contents to find the downloaded files.
 	return nil
 }
 

@@ -181,12 +181,9 @@ func main() {
 
 		// Separate s5cmd series from other files for post-processing
 		var s5cmdSeries []*FileInfo
-		var otherFiles []*FileInfo
 		for _, f := range files {
 			if f.S5cmdManifestPath != "" {
 				s5cmdSeries = append(s5cmdSeries, f)
-			} else {
-				otherFiles = append(otherFiles, f)
 			}
 		}
 
@@ -210,7 +207,6 @@ func main() {
 
 		wg.Add(options.Concurrent)
 		inputChan := make(chan *FileInfo, len(files))
-		dicomFileChan := make(chan string, 1000) // Channel for individual DICOM files
 
 		for i := 0; i < options.Concurrent; i++ {
 			ctx := &WorkerContext{
@@ -277,6 +273,11 @@ func main() {
 		if len(s5cmdSeries) > 0 {
 			fmt.Println("\nOrganizing s5cmd downloaded series...")
 			for _, seriesInfo := range s5cmdSeries {
+				// Skip post-processing for sync jobs as the directory is already final
+				if seriesInfo.IsSyncJob {
+					continue
+				}
+
 				tempDir := seriesInfo.S5cmdManifestPath
 				filesInDir, err := ioutil.ReadDir(tempDir)
 				if err != nil {
@@ -305,45 +306,11 @@ func main() {
 				}
 
 				updateS5cmdSeriesMap(seriesInfo.OriginalS5cmdURI, seriesUID)
-
-				// Organize the files within the final directory
-				var dicomFilesToOrganize []*DicomFile
-				for _, fileInfo := range filesInDir {
-					newPath := filepath.Join(finalDir, fileInfo.Name())
-					dicomFile, err := ProcessDicomFile(newPath)
-					if err != nil {
-						logger.Warnf("Could not process DICOM file %s for organization: %v", newPath, err)
-						continue
-					}
-					dicomFilesToOrganize = append(dicomFilesToOrganize, dicomFile)
-				}
-				if err := OrganizeSeriesFiles(dicomFilesToOrganize, finalDir); err != nil {
-					logger.Errorf("Error organizing files for series %s: %v", seriesUID, err)
-				}
 			}
 			if err := saveS5cmdSeriesMap(options.Output); err != nil {
 				logger.Errorf("Failed to save s5cmd series map: %v", err)
 			}
 			fmt.Println("s5cmd series organization complete.")
-		}
-
-		// Post-processing for other DICOM files
-		close(dicomFileChan)
-		if len(dicomFileChan) > 0 {
-			var downloadedDicomFiles []*DicomFile
-			fmt.Println("\nProcessing other downloaded DICOM files...")
-			for path := range dicomFileChan {
-				dicomFile, err := ProcessDicomFile(path)
-				if err != nil {
-					logger.Warnf("Could not process DICOM file %s: %v", path, err)
-					continue
-				}
-				downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
-			}
-			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output); err != nil {
-				logger.Errorf("Error organizing other DICOM files: %v", err)
-			}
-			fmt.Println("DICOM file processing complete.")
 		}
 
 		updateProgress(stats, "Complete")
