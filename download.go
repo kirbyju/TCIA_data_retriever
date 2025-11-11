@@ -353,6 +353,7 @@ type FileInfo struct {
 	DRSURI             string `json:"drs_uri,omitempty"`
 	S5cmdManifestPath  string `json:"s5cmd_manifest_path,omitempty"`
 	FileName           string `json:"file_name,omitempty"`
+	OriginalS5cmdURI   string `json:"original_s5cmd_uri,omitempty"`
 }
 
 // GetOutput construct the output directory (thread-safe)
@@ -705,6 +706,12 @@ func (info *FileInfo) DownloadWithRetry(output string, httpClient *http.Client, 
 func isRetryableError(err error) bool {
 	// Check for network errors, timeouts, and certain HTTP status codes
 	errStr := err.Error()
+
+	// s5cmd errors are generally not retryable
+	if strings.Contains(errStr, "s5cmd command failed") {
+		return false
+	}
+
 	return strings.Contains(errStr, "timeout") ||
 		strings.Contains(errStr, "connection refused") ||
 		strings.Contains(errStr, "connection reset") ||
@@ -721,14 +728,12 @@ func isRetryableError(err error) bool {
 
 // doDownload is a dispatcher for different download types
 func (info *FileInfo) doDownload(output string, httpClient *http.Client, authToken *Token, options *Options) error {
+	// For s5cmd downloads, the S5cmdManifestPath field holds the temporary directory
+	if info.OriginalS5cmdURI != "" {
+		return info.downloadFromS3(info.S5cmdManifestPath, options)
+	}
 	if strings.HasPrefix(info.DownloadURL, "s3://") {
 		return info.downloadFromS3(output, options)
-	}
-	if info.S5cmdManifestPath != "" {
-		// This case is now handled by decodeS5cmd which creates individual FileInfo objects.
-		// This logic path should ideally not be taken.
-		logger.Warnf("downloadS5cmdManifest called unexpectedly for %s", info.S5cmdManifestPath)
-		return info.downloadS5cmdManifest(output, options)
 	}
 	if info.DRSURI != "" {
 		return info.downloadFromGen3(output, httpClient, options)
@@ -740,8 +745,8 @@ func (info *FileInfo) doDownload(output string, httpClient *http.Client, authTok
 }
 
 // downloadFromS3 downloads a file from S3 using the s5cmd command-line tool.
-func (info *FileInfo) downloadFromS3(output string, options *Options) error {
-	logger.Debugf("Downloading from S3: %s", info.DownloadURL)
+func (info *FileInfo) downloadFromS3(targetDir string, options *Options) error {
+	logger.Debugf("Downloading from S3: %s to %s", info.DownloadURL, targetDir)
 
 	// Construct the s5cmd command to download a single file
 	// s5cmd --no-sign-request --endpoint-url https://s3.amazonaws.com cp <s3-uri> .
@@ -750,9 +755,9 @@ func (info *FileInfo) downloadFromS3(output string, options *Options) error {
 		"--endpoint-url", "https://s3.amazonaws.com",
 		"cp",
 		info.DownloadURL,
-		".", // Download to the current directory (output)
+		".", // Download to the current directory, which is set by cmd.Dir
 	)
-	cmd.Dir = output // Run the command in the output directory
+	cmd.Dir = targetDir // Run the command in the specified target directory
 
 	// Execute the command
 	stdout, err := cmd.CombinedOutput()
@@ -763,7 +768,6 @@ func (info *FileInfo) downloadFromS3(output string, options *Options) error {
 	logger.Debugf("s5cmd output for %s:\n%s", info.DownloadURL, string(stdout))
 
 	// The downloaded file will be in the output directory with its original name.
-	// We will handle renaming and moving it later.
 	info.FileName = filepath.Base(info.DownloadURL) // Store the downloaded filename
 
 	return nil

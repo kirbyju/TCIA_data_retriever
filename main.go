@@ -66,7 +66,7 @@ func decodeInputFile(filePath string, client *http.Client, token *Token, options
 	case ".tcia":
 		return decodeTCIA(filePath, client, token, options), nil
 	case ".s5cmd":
-		return decodeS5cmd(filePath)
+		return decodeS5cmd(filePath, options.Output)
 	case ".csv", ".tsv", ".xlsx":
 		// Try to decode as a SeriesInstanceUID spreadsheet first
 		seriesUIDs, err := getSeriesUIDsFromSpreadsheet(filePath)
@@ -185,7 +185,7 @@ func main() {
 
 		// Determine the item type for messaging
 		itemType := "series"
-		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].S5cmdManifestPath != "") {
+		if len(files) > 0 && (files[0].DRSURI != "" || files[0].DownloadURL != "" || files[0].OriginalS5cmdURI != "") {
 			itemType = "files"
 		}
 
@@ -197,7 +197,10 @@ func main() {
 
 		wg.Add(options.Concurrent)
 		inputChan := make(chan *FileInfo, len(files)) // Larger buffer to prevent blocking
-		dicomFileChan := make(chan string, len(files)) // Channel to collect downloaded DICOM file paths
+
+		// A map to track downloaded files per s5cmd series
+		s5cmdDownloads := make(map[string][]string)
+		var s5cmdMu sync.Mutex
 
 		// Create worker contexts
 		for i := 0; i < options.Concurrent; i++ {
@@ -217,7 +220,7 @@ func main() {
 					logger.Debugf("[Worker %d] Processing %s", ctx.WorkerID, fileInfo.SeriesUID)
 
 					// Skip metadata saving for spreadsheet inputs
-					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.S5cmdManifestPath != ""
+					isSpreadsheetInput := fileInfo.DownloadURL != "" || fileInfo.DRSURI != "" || fileInfo.OriginalS5cmdURI != ""
 
 					if ctx.Options.Meta {
 						if isSpreadsheetInput {
@@ -248,10 +251,12 @@ func main() {
 								logger.Warnf("[Worker %d] Download %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 								atomic.AddInt32(&ctx.Stats.Failed, 1)
 							} else {
-								// If the downloaded file is a DICOM file from s5cmd, send it for processing
-								if strings.HasPrefix(fileInfo.DownloadURL, "s3://") {
-									downloadedFilePath := filepath.Join(ctx.Options.Output, fileInfo.FileName)
-									dicomFileChan <- downloadedFilePath
+								// If the downloaded file is from s5cmd, track it
+								if fileInfo.OriginalS5cmdURI != "" {
+									s5cmdMu.Lock()
+									downloadedFilePath := filepath.Join(fileInfo.S5cmdManifestPath, fileInfo.FileName)
+									s5cmdDownloads[fileInfo.OriginalS5cmdURI] = append(s5cmdDownloads[fileInfo.OriginalS5cmdURI], downloadedFilePath)
+									s5cmdMu.Unlock()
 								}
 
 								// Save metadata only for TCIA inputs
@@ -279,23 +284,56 @@ func main() {
 		close(inputChan)
 		wg.Wait()
 
-		// Close the dicom file channel and collect the paths
-		close(dicomFileChan)
-		var downloadedDicomFiles []*DicomFile
-		if len(dicomFileChan) > 0 {
-			fmt.Println("\nProcessing downloaded DICOM files...")
-			for path := range dicomFileChan {
-				dicomFile, err := ProcessDicomFile(path)
-				if err != nil {
-					logger.Warnf("Could not process DICOM file %s: %v", path, err)
+		// Organize s5cmd downloads
+		if len(s5cmdDownloads) > 0 {
+			fmt.Println("\nOrganizing s5cmd downloaded series...")
+			for originalURI, downloadedFiles := range s5cmdDownloads {
+				if len(downloadedFiles) == 0 {
 					continue
 				}
-				downloadedDicomFiles = append(downloadedDicomFiles, dicomFile)
+
+				// Get the temporary directory from the first file
+				tempDir := filepath.Dir(downloadedFiles[0])
+
+				// Process the first DICOM file to get the SeriesInstanceUID
+				firstDicom, err := ProcessDicomFile(downloadedFiles[0])
+				if err != nil {
+					logger.Warnf("Could not process DICOM file to get SeriesUID for %s: %v", originalURI, err)
+					continue
+				}
+				seriesUID := firstDicom.SeriesUID
+				finalDir := filepath.Join(options.Output, seriesUID)
+
+				// Rename the temporary directory to the final SeriesInstanceUID directory
+				if err := os.Rename(tempDir, finalDir); err != nil {
+					logger.Errorf("Could not rename temp dir %s to %s: %v", tempDir, finalDir, err)
+					continue
+				}
+
+				// Update the map file
+				updateS5cmdSeriesMap(originalURI, seriesUID)
+
+				// Process and organize all DICOM files in the newly named directory
+				var dicomFilesToOrganize []*DicomFile
+				for _, filePath := range downloadedFiles {
+					// Update path to reflect the new directory name
+					newPath := filepath.Join(finalDir, filepath.Base(filePath))
+					dicomFile, err := ProcessDicomFile(newPath)
+					if err != nil {
+						logger.Warnf("Could not process DICOM file %s: %v", newPath, err)
+						continue
+					}
+					dicomFilesToOrganize = append(dicomFilesToOrganize, dicomFile)
+				}
+				if err := OrganizeDicomFiles(dicomFilesToOrganize, options.Output); err != nil {
+					logger.Errorf("Error organizing DICOM files for series %s: %v", seriesUID, err)
+				}
 			}
-			if err := OrganizeDicomFiles(downloadedDicomFiles, options.Output); err != nil {
-				logger.Errorf("Error organizing DICOM files: %v", err)
+			// Save the updated map to disk
+			if err := saveS5cmdSeriesMap(options.Output); err != nil {
+				logger.Errorf("Failed to save s5cmd series map: %v", err)
 			}
-			fmt.Println("DICOM file processing complete.")
+			fmt.Println("s5cmd series organization complete.")
 		}
 
 		// Final progress update

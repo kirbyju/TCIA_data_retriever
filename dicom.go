@@ -64,9 +64,13 @@ func OrganizeDicomFiles(files []*DicomFile, outputDir string) error {
 	}
 
 	for seriesUID, dicomFiles := range series {
+		// For s5cmd downloads, the series directory is already created and named correctly.
+		// For other download types, we might need to create it.
 		seriesDir := filepath.Join(outputDir, seriesUID)
-		if err := os.MkdirAll(seriesDir, 0755); err != nil {
-			return fmt.Errorf("could not create series directory %s: %v", seriesDir, err)
+		if _, err := os.Stat(seriesDir); os.IsNotExist(err) {
+			if err := os.MkdirAll(seriesDir, 0755); err != nil {
+				return fmt.Errorf("could not create series directory %s: %v", seriesDir, err)
+			}
 		}
 
 		// Sort files by AcquisitionNumber, then InstanceNumber
