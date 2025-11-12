@@ -2,7 +2,9 @@ package main
 
 import (
 	"archive/tar"
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,6 +83,50 @@ func ToJSON(files []*FileInfo, output string) {
 	if err != nil {
 		log.Error().Msgf("%v", err)
 	}
+}
+
+// writeMetadataToCSV writes a slice of FileInfo structs to a CSV file.
+func writeMetadataToCSV(filePath string, fileInfos []*FileInfo) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("could not create CSV file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Write header - using reflection to get struct field names
+	header := []string{
+		"SeriesInstanceUID", "SubjectID", "Collection", "Modality",
+		"StudyInstanceUID", "SeriesDescription", "SeriesNumber",
+		"Manufacturer", "NumberOfImages", "FileSize", "MD5Hash",
+	}
+	if err := writer.Write(header); err != nil {
+		return fmt.Errorf("failed to write CSV header: %w", err)
+	}
+
+	// Write rows
+	for _, info := range fileInfos {
+		record := []string{
+			info.SeriesUID,
+			info.SubjectID,
+			info.Collection,
+			info.Modality,
+			info.StudyUID,
+			info.SeriesDescription,
+			info.SeriesNumber,
+			info.Manufacturer,
+			info.NumberOfImages,
+			info.FileSize,
+			info.MD5Hash,
+		}
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("failed to write CSV record for series %s: %w", info.SeriesUID, err)
+		}
+	}
+
+	return nil
 }
 
 // copyFile copies a file from src to dst.
