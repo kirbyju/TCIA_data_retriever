@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/suyashkumar/dicom"
 	"github.com/suyashkumar/dicom/pkg/tag"
@@ -51,5 +52,6 @@ func getElementValue(dataset dicom.Dataset, tag tag.Tag) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not find tag %v", tag)
 	}
-	return element.Value.String(), nil
+	// Trim leading/trailing brackets and spaces
+	return strings.Trim(element.Value.String(), "[] "), nil
 }

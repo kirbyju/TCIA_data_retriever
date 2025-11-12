@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"go.uber.org/zap"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +29,7 @@ var (
 type DownloadStats struct {
 	Total          int32
 	Downloaded     int32
+	Synced         int32
 	Skipped        int32
 	Failed         int32
 	StartTime      time.Time
@@ -105,15 +105,15 @@ func updateProgress(stats *DownloadStats, currentSeriesID string) {
 	stats.LastUpdate = now
 
 	// Calculate progress
-	processed := atomic.LoadInt32(&stats.Downloaded) + atomic.LoadInt32(&stats.Skipped) + atomic.LoadInt32(&stats.Failed)
+	processed := atomic.LoadInt32(&stats.Downloaded) + atomic.LoadInt32(&stats.Synced) + atomic.LoadInt32(&stats.Skipped) + atomic.LoadInt32(&stats.Failed)
 	percentage := float64(processed) / float64(stats.Total) * 100
 
-	// Calculate ETA based on download rate only
+	// Calculate ETA based on download/sync rate
 	elapsed := time.Since(stats.StartTime)
 	var eta string
-	if stats.Downloaded > 0 && elapsed > 0 {
-		rate := float64(stats.Downloaded) / elapsed.Seconds()
-		remainingFiles := float64(stats.Total - stats.Downloaded - stats.Skipped - stats.Failed)
+	if downloadedAndSynced := atomic.LoadInt32(&stats.Downloaded) + atomic.LoadInt32(&stats.Synced); downloadedAndSynced > 0 && elapsed > 0 {
+		rate := float64(downloadedAndSynced) / elapsed.Seconds()
+		remainingFiles := float64(stats.Total - processed)
 		if remainingFiles > 0 && rate > 0 {
 			remainingTime := remainingFiles / rate
 			etaDuration := time.Duration(remainingTime * float64(time.Second))
@@ -128,9 +128,9 @@ func updateProgress(stats *DownloadStats, currentSeriesID string) {
 	}
 
 	// Clear line and print progress
-	fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d] %.1f%% | Downloaded: %d | Skipped: %d | Failed: %d%s | Current: %s",
+	fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d] %.1f%% | Downloaded: %d | Synced: %d | Skipped: %d | Failed: %d%s | Current: %s",
 		processed, stats.Total, percentage,
-		stats.Downloaded, stats.Skipped, stats.Failed,
+		stats.Downloaded, stats.Synced, stats.Skipped, stats.Failed,
 		eta, displayID)
 }
 
@@ -166,9 +166,9 @@ func main() {
 		}
 
 		// Load the s5cmd series map
-		s5cmdMap, err := loadS5cmdSeriesMap(options.Output)
+		s5cmdMap, err := loadS5cmdSeriesMapFromCSVs(options.Output)
 		if err != nil {
-			logger.Fatalf("Failed to load s5cmd series map: %v", err)
+			logger.Fatalf("Failed to load s5cmd series map from CSVs: %v", err)
 		}
 
 		var wg sync.WaitGroup
@@ -258,7 +258,12 @@ func main() {
 										logger.Warnf("[Worker %d] Save meta info %s failed - %s", ctx.WorkerID, fileInfo.SeriesUID, err)
 									}
 								}
-								atomic.AddInt32(&ctx.Stats.Downloaded, 1)
+								// Increment correct counter
+								if fileInfo.IsSyncJob {
+									atomic.AddInt32(&ctx.Stats.Synced, 1)
+								} else {
+									atomic.AddInt32(&ctx.Stats.Downloaded, 1)
+								}
 							}
 						} else {
 							logger.Debugf("[Worker %d] Skip %s (already exists with correct size/checksum)", ctx.WorkerID, fileInfo.SeriesUID)
@@ -279,45 +284,77 @@ func main() {
 		// Post-processing for s5cmd series
 		if newS5cmdJobs > 0 {
 			fmt.Println("\nOrganizing s5cmd downloaded series...")
+			s5cmdSeriesToFetchMeta := make(map[string]string) // Map SeriesUID to OriginalS5cmdURI
+
 			for _, seriesInfo := range files {
-				// Skip post-processing for sync jobs and non-s5cmd files
 				if seriesInfo.IsSyncJob || seriesInfo.S5cmdManifestPath == "" {
 					continue
 				}
 
 				tempDir := seriesInfo.S5cmdManifestPath
-				filesInDir, err := ioutil.ReadDir(tempDir)
+				filesInDir, err := os.ReadDir(tempDir)
 				if err != nil {
 					logger.Warnf("Could not read temp directory %s: %v", tempDir, err)
 					continue
 				}
 				if len(filesInDir) == 0 {
-					logger.Warnf("No files found in temp directory %s for series %s", tempDir, seriesInfo.OriginalS5cmdURI)
-					os.Remove(tempDir) // Clean up empty temp dir
+					logger.Warnf("No files found in temp directory %s", tempDir)
+					os.Remove(tempDir)
 					continue
 				}
 
-				// Get SeriesUID from the first file
 				firstFilePath := filepath.Join(tempDir, filesInDir[0].Name())
 				firstDicom, err := ProcessDicomFile(firstFilePath)
 				if err != nil {
-					logger.Warnf("Could not process DICOM file %s to get SeriesUID: %v", firstFilePath, err)
+					logger.Warnf("Could not get SeriesUID from %s: %v", firstFilePath, err)
 					continue
 				}
+
 				seriesUID := firstDicom.SeriesUID
 				finalDir := filepath.Join(options.Output, seriesUID)
+
+				// If the destination directory already exists, remove it. This handles cases
+				// where a user manually deletes a metadata entry to re-download a series.
+				if _, err := os.Stat(finalDir); err == nil {
+					logger.Warnf("Destination directory %s already exists. Removing it before proceeding.", finalDir)
+					if err := os.RemoveAll(finalDir); err != nil {
+						logger.Errorf("Failed to remove existing directory %s: %v", finalDir, err)
+						continue // Skip this series if cleanup fails
+					}
+				}
 
 				if err := os.Rename(tempDir, finalDir); err != nil {
 					logger.Errorf("Could not rename temp dir %s to %s: %v", tempDir, finalDir, err)
 					continue
 				}
-
-				s5cmdMap[seriesInfo.OriginalS5cmdURI] = seriesUID
-			}
-			if err := saveS5cmdSeriesMap(options.Output, s5cmdMap); err != nil {
-				logger.Errorf("Failed to save s5cmd series map: %v", err)
+				s5cmdSeriesToFetchMeta[seriesUID] = seriesInfo.OriginalS5cmdURI
 			}
 			fmt.Println("s5cmd series organization complete.")
+
+			// Fetch and save metadata
+			if len(s5cmdSeriesToFetchMeta) > 0 {
+				uids := make([]string, 0, len(s5cmdSeriesToFetchMeta))
+				for uid := range s5cmdSeriesToFetchMeta {
+					uids = append(uids, uid)
+				}
+
+				fmt.Println("\nFetching metadata for new s5cmd series...")
+				fetchedMetadata, err := FetchMetadataForSeriesUIDs(uids, client, token, options)
+				if err != nil {
+					logger.Errorf("Failed to fetch s5cmd metadata: %v", err)
+				} else {
+					for _, meta := range fetchedMetadata {
+						meta.OriginalS5cmdURI = s5cmdSeriesToFetchMeta[meta.SeriesUID]
+					}
+					manifestName := strings.TrimSuffix(filepath.Base(options.Input), filepath.Ext(options.Input))
+					csvPath := filepath.Join(options.Output, "metadata", fmt.Sprintf("%s-metadata.csv", manifestName))
+					if err := writeMetadataToCSV(csvPath, fetchedMetadata); err != nil {
+						logger.Errorf("Failed to write s5cmd metadata to CSV: %v", err)
+					} else {
+						fmt.Printf("Metadata for %d series saved to %s\n", len(fetchedMetadata), csvPath)
+					}
+				}
+			}
 		}
 
 		updateProgress(stats, "Complete")
@@ -330,12 +367,15 @@ func main() {
 		fmt.Println("\n=== Download Summary ===")
 		fmt.Printf("Total items: %d\n", stats.Total)
 		fmt.Printf("Downloaded: %d\n", stats.Downloaded)
+		if stats.Synced > 0 {
+			fmt.Printf("Synced: %d\n", stats.Synced)
+		}
 		fmt.Printf("Skipped: %d\n", stats.Skipped)
 		fmt.Printf("Failed: %d\n", stats.Failed)
 		fmt.Printf("Total time: %s\n", elapsed.Round(time.Second))
 
 		if stats.Total > 0 {
-			rate := float64(stats.Downloaded+stats.Skipped) / elapsed.Seconds()
+			rate := float64(stats.Downloaded+stats.Synced+stats.Skipped) / elapsed.Seconds()
 			fmt.Printf("Average rate: %.1f items/second\n", rate)
 		}
 
