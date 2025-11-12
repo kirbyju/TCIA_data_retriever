@@ -312,6 +312,17 @@ func main() {
 
 				seriesUID := firstDicom.SeriesUID
 				finalDir := filepath.Join(options.Output, seriesUID)
+
+				// If the destination directory already exists, remove it. This handles cases
+				// where a user manually deletes a metadata entry to re-download a series.
+				if _, err := os.Stat(finalDir); err == nil {
+					logger.Warnf("Destination directory %s already exists. Removing it before proceeding.", finalDir)
+					if err := os.RemoveAll(finalDir); err != nil {
+						logger.Errorf("Failed to remove existing directory %s: %v", finalDir, err)
+						continue // Skip this series if cleanup fails
+					}
+				}
+
 				if err := os.Rename(tempDir, finalDir); err != nil {
 					logger.Errorf("Could not rename temp dir %s to %s: %v", tempDir, finalDir, err)
 					continue
