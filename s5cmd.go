@@ -2,41 +2,78 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// loadS5cmdSeriesMap loads the mapping file from the output directory.
-func loadS5cmdSeriesMap(outputDir string) (map[string]string, error) {
-	mapFilePath := filepath.Join(outputDir, "metadata", "s5cmd_series_map.json")
-	if _, err := os.Stat(mapFilePath); os.IsNotExist(err) {
-		return make(map[string]string), nil // Return empty map if file doesn't exist
-	}
+// loadS5cmdSeriesMapFromCSVs scans all '*-metadata.csv' files in the metadata
+// directory to build a map of previously downloaded s5cmd series.
+func loadS5cmdSeriesMapFromCSVs(outputDir string) (map[string]string, error) {
+	seriesMap := make(map[string]string)
+	metaDir := filepath.Join(outputDir, "metadata")
 
-	data, err := os.ReadFile(mapFilePath)
+	files, err := os.ReadDir(metaDir)
 	if err != nil {
-		return nil, fmt.Errorf("could not read s5cmd series map: %w", err)
+		if os.IsNotExist(err) {
+			return seriesMap, nil // No metadata dir yet, so no map.
+		}
+		return nil, fmt.Errorf("could not read metadata directory: %w", err)
 	}
 
-	var seriesMap map[string]string
-	if err := json.Unmarshal(data, &seriesMap); err != nil {
-		return nil, fmt.Errorf("could not parse s5cmd series map: %w", err)
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), "-metadata.csv") {
+			continue
+		}
+
+		filePath := filepath.Join(metaDir, file.Name())
+		f, err := os.Open(filePath)
+		if err != nil {
+			logger.Warnf("Could not open metadata CSV %s: %v", filePath, err)
+			continue
+		}
+		defer f.Close()
+
+		reader := csv.NewReader(f)
+		header, err := reader.Read()
+		if err != nil {
+			logger.Warnf("Could not read header from CSV %s: %v", filePath, err)
+			continue
+		}
+
+		uriIndex, uidIndex := -1, -1
+		for i, colName := range header {
+			if colName == "OriginalS5cmdURI" {
+				uriIndex = i
+			} else if colName == "SeriesInstanceUID" {
+				uidIndex = i
+			}
+		}
+
+		if uriIndex == -1 || uidIndex == -1 {
+			logger.Warnf("Could not find required columns in %s", filePath)
+			continue
+		}
+
+		for {
+			record, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				logger.Warnf("Error reading record from %s: %v", filePath, err)
+				continue
+			}
+			if len(record) > uriIndex && len(record) > uidIndex {
+				seriesMap[record[uriIndex]] = record[uidIndex]
+			}
+		}
 	}
+
 	return seriesMap, nil
-}
-
-// saveS5cmdSeriesMap saves the mapping file to the output directory.
-func saveS5cmdSeriesMap(outputDir string, seriesMap map[string]string) error {
-	mapFilePath := filepath.Join(outputDir, "metadata", "s5cmd_series_map.json")
-	data, err := json.MarshalIndent(seriesMap, "", "  ")
-	if err != nil {
-		return fmt.Errorf("could not marshal s5cmd series map: %w", err)
-	}
-
-	return os.WriteFile(mapFilePath, data, 0644)
 }
 
 func decodeS5cmd(filePath string, outputDir string, processedSeries map[string]string) ([]*FileInfo, int) {
