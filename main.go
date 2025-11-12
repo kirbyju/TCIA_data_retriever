@@ -166,9 +166,9 @@ func main() {
 		}
 
 		// Load the s5cmd series map
-		s5cmdMap, err := loadS5cmdSeriesMap(options.Output)
+		s5cmdMap, err := loadS5cmdSeriesMapFromCSVs(options.Output)
 		if err != nil {
-			logger.Fatalf("Failed to load s5cmd series map: %v", err)
+			logger.Fatalf("Failed to load s5cmd series map from CSVs: %v", err)
 		}
 
 		var wg sync.WaitGroup
@@ -284,9 +284,9 @@ func main() {
 		// Post-processing for s5cmd series
 		if newS5cmdJobs > 0 {
 			fmt.Println("\nOrganizing s5cmd downloaded series...")
-			var newlyDownloadedUIDs []string
+			s5cmdSeriesToFetchMeta := make(map[string]string) // Map SeriesUID to OriginalS5cmdURI
+
 			for _, seriesInfo := range files {
-				// Skip post-processing for sync jobs and non-s5cmd files
 				if seriesInfo.IsSyncJob || seriesInfo.S5cmdManifestPath == "" {
 					continue
 				}
@@ -298,42 +298,43 @@ func main() {
 					continue
 				}
 				if len(filesInDir) == 0 {
-					logger.Warnf("No files found in temp directory %s for series %s", tempDir, seriesInfo.OriginalS5cmdURI)
-					os.Remove(tempDir) // Clean up empty temp dir
+					logger.Warnf("No files found in temp directory %s", tempDir)
+					os.Remove(tempDir)
 					continue
 				}
 
-				// Get SeriesUID from the first file
 				firstFilePath := filepath.Join(tempDir, filesInDir[0].Name())
 				firstDicom, err := ProcessDicomFile(firstFilePath)
 				if err != nil {
-					logger.Warnf("Could not process DICOM file %s to get SeriesUID: %v", firstFilePath, err)
+					logger.Warnf("Could not get SeriesUID from %s: %v", firstFilePath, err)
 					continue
 				}
+
 				seriesUID := firstDicom.SeriesUID
 				finalDir := filepath.Join(options.Output, seriesUID)
-
 				if err := os.Rename(tempDir, finalDir); err != nil {
 					logger.Errorf("Could not rename temp dir %s to %s: %v", tempDir, finalDir, err)
 					continue
 				}
-
-				s5cmdMap[seriesInfo.OriginalS5cmdURI] = seriesUID
-				newlyDownloadedUIDs = append(newlyDownloadedUIDs, seriesUID)
-			}
-			if err := saveS5cmdSeriesMap(options.Output, s5cmdMap); err != nil {
-				logger.Errorf("Failed to save s5cmd series map: %v", err)
+				s5cmdSeriesToFetchMeta[seriesUID] = seriesInfo.OriginalS5cmdURI
 			}
 			fmt.Println("s5cmd series organization complete.")
 
-			// Fetch and save metadata for the newly downloaded series
-			if len(newlyDownloadedUIDs) > 0 {
+			// Fetch and save metadata
+			if len(s5cmdSeriesToFetchMeta) > 0 {
+				uids := make([]string, 0, len(s5cmdSeriesToFetchMeta))
+				for uid := range s5cmdSeriesToFetchMeta {
+					uids = append(uids, uid)
+				}
+
 				fmt.Println("\nFetching metadata for new s5cmd series...")
-				fetchedMetadata, err := FetchMetadataForSeriesUIDs(newlyDownloadedUIDs, client, token, options)
+				fetchedMetadata, err := FetchMetadataForSeriesUIDs(uids, client, token, options)
 				if err != nil {
-					logger.Errorf("Failed to fetch metadata for s5cmd series: %v", err)
+					logger.Errorf("Failed to fetch s5cmd metadata: %v", err)
 				} else {
-					// Save metadata to a CSV file named after the manifest
+					for _, meta := range fetchedMetadata {
+						meta.OriginalS5cmdURI = s5cmdSeriesToFetchMeta[meta.SeriesUID]
+					}
 					manifestName := strings.TrimSuffix(filepath.Base(options.Input), filepath.Ext(options.Input))
 					csvPath := filepath.Join(options.Output, "metadata", fmt.Sprintf("%s-metadata.csv", manifestName))
 					if err := writeMetadataToCSV(csvPath, fetchedMetadata); err != nil {

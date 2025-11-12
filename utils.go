@@ -85,25 +85,32 @@ func ToJSON(files []*FileInfo, output string) {
 	}
 }
 
-// writeMetadataToCSV writes a slice of FileInfo structs to a CSV file.
+// writeMetadataToCSV writes/appends a slice of FileInfo structs to a CSV file.
 func writeMetadataToCSV(filePath string, fileInfos []*FileInfo) error {
-	file, err := os.Create(filePath)
+	// Check if file exists to determine if we need to write a header
+	_, err := os.Stat(filePath)
+	writeHeader := os.IsNotExist(err)
+
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("could not create CSV file: %w", err)
+		return fmt.Errorf("could not open/create CSV file: %w", err)
 	}
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// Write header - using reflection to get struct field names
 	header := []string{
 		"SeriesInstanceUID", "SubjectID", "Collection", "Modality",
 		"StudyInstanceUID", "SeriesDescription", "SeriesNumber",
 		"Manufacturer", "NumberOfImages", "FileSize", "MD5Hash",
+		"OriginalS5cmdURI",
 	}
-	if err := writer.Write(header); err != nil {
-		return fmt.Errorf("failed to write CSV header: %w", err)
+
+	if writeHeader {
+		if err := writer.Write(header); err != nil {
+			return fmt.Errorf("failed to write CSV header: %w", err)
+		}
 	}
 
 	// Write rows
@@ -120,6 +127,7 @@ func writeMetadataToCSV(filePath string, fileInfos []*FileInfo) error {
 			info.NumberOfImages,
 			info.FileSize,
 			info.MD5Hash,
+			info.OriginalS5cmdURI,
 		}
 		if err := writer.Write(record); err != nil {
 			return fmt.Errorf("failed to write CSV record for series %s: %w", info.SeriesUID, err)
